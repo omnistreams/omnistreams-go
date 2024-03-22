@@ -197,7 +197,6 @@ func (c *Connection) handleFrame(f *frame) {
 				}
 			}()
 
-			// TODO: can block here and we currently hold the mutex
 			c.streamCh <- stream
 
 			c.mut.Lock()
@@ -205,7 +204,6 @@ func (c *Connection) handleFrame(f *frame) {
 			c.mut.Unlock()
 		}
 
-		// TODO: can block here and we currently hold the mutex
 		stream.recvCh <- f.data
 
 		//if f.fin {
