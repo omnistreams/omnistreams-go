@@ -7,18 +7,35 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	"nhooyr.io/websocket"
 )
 
 const HeaderSize = 8
 
+type FrameType uint8
+
 const (
 	FrameTypeReset = iota
 	FrameTypeData
 	FrameTypeWindowIncrease
 )
+
+func (ft FrameType) String() string {
+	switch ft {
+	case FrameTypeReset:
+		return "FrameTypeReset"
+	case FrameTypeData:
+		return "FrameTypeData"
+	case FrameTypeWindowIncrease:
+		return "FrameTypeWindowIncrease"
+	default:
+		return fmt.Sprintf("Unknown frame type: %d", ft)
+	}
+}
 
 type Connection struct {
 	nextStreamId uint32
@@ -47,7 +64,6 @@ func NewConnection(wsConn *websocket.Conn) *Connection {
 		ctx := context.Background()
 
 		for {
-			fmt.Println("loop msg")
 			msgType, msgBytes, err := wsConn.Read(ctx)
 			if err != nil {
 				fmt.Println("Error wsConn.Read", err)
@@ -65,10 +81,10 @@ func NewConnection(wsConn *websocket.Conn) *Connection {
 				break
 			}
 
-			fmt.Println(len(frame.data))
-			//fmt.Printf("%+v\n", frame)
+			//fmt.Println("Received frame:")
+			//fmt.Println(frame)
 
-			c.handleFrame(frame)
+			go c.handleFrame(frame)
 		}
 	}()
 
@@ -82,7 +98,9 @@ func (c *Connection) AcceptStream() (*Stream, error) {
 
 func (c *Connection) OpenStream() (*Stream, error) {
 
+	c.mut.Lock()
 	streamId := c.nextStreamId
+	c.mut.Unlock()
 
 	frm := &frame{
 		frameType: FrameTypeData,
@@ -114,24 +132,37 @@ func (c *Connection) OpenStream() (*Stream, error) {
 		}
 	}()
 
-	stream := &Stream{
-		id:     streamId,
-		recvCh: make(chan []byte),
-		sendCh: sendCh,
-	}
+	stream := NewStream(streamId, sendCh)
+
+	go func() {
+		<-stream.closeReadCh
+		c.sendFrame(&frame{
+			frameType: FrameTypeReset,
+			streamId:  streamId,
+			errorCode: 42,
+		})
+	}()
+
+	go func() {
+		<-stream.closeWriteCh
+		c.sendFrame(&frame{
+			frameType: FrameTypeData,
+			streamId:  streamId,
+			syn:       false,
+			fin:       true,
+		})
+	}()
 
 	c.mut.Lock()
-	defer c.mut.Unlock()
-
 	c.nextStreamId += 2
 	c.streams[streamId] = stream
+	c.mut.Unlock()
 
 	return stream, nil
 }
 
 func (c *Connection) sendFrame(frame *frame) error {
 	packedFrame := packFrame(frame)
-	fmt.Println(packedFrame)
 	err := c.wsConn.Write(context.Background(), websocket.MessageBinary, packedFrame)
 	if err != nil {
 		return err
@@ -141,19 +172,15 @@ func (c *Connection) sendFrame(frame *frame) error {
 }
 
 func (c *Connection) handleFrame(f *frame) {
-	c.mut.Lock()
-	defer c.mut.Unlock()
 
 	switch f.frameType {
 	case FrameTypeData:
+		c.mut.Lock()
 		stream, ok := c.streams[f.streamId]
+		c.mut.Unlock()
 		if !ok {
 			sendCh := make(chan []byte)
-			stream = &Stream{
-				id:     f.streamId,
-				recvCh: make(chan []byte),
-				sendCh: sendCh,
-			}
+			stream = NewStream(f.streamId, sendCh)
 
 			go func() {
 				for {
@@ -170,12 +197,23 @@ func (c *Connection) handleFrame(f *frame) {
 				}
 			}()
 
+			// TODO: can block here and we currently hold the mutex
 			c.streamCh <- stream
 
+			c.mut.Lock()
 			c.streams[f.streamId] = stream
+			c.mut.Unlock()
 		}
 
+		// TODO: can block here and we currently hold the mutex
 		stream.recvCh <- f.data
+
+		//if f.fin {
+		//        err := stream.Close()
+		//        if err != nil {
+		//                fmt.Println("handleFrame stream.Close():", err)
+		//        }
+		//}
 
 		err := c.sendFrame(&frame{
 			frameType:      FrameTypeWindowIncrease,
@@ -193,32 +231,69 @@ func (c *Connection) handleFrame(f *frame) {
 }
 
 type Stream struct {
-	id      uint32
-	recvCh  chan []byte
-	sendCh  chan []byte
-	recvBuf []byte
+	id           uint32
+	recvCh       chan []byte
+	sendCh       chan []byte
+	recvBuf      []byte
+	closeReadCh  chan struct{}
+	closeWriteCh chan struct{}
+	writeClosed  atomic.Bool
+}
+
+func NewStream(streamId uint32, sendCh chan []byte) *Stream {
+
+	stream := &Stream{
+		id:           streamId,
+		recvCh:       make(chan []byte),
+		sendCh:       sendCh,
+		closeReadCh:  make(chan struct{}),
+		closeWriteCh: make(chan struct{}),
+	}
+
+	return stream
 }
 
 func (s *Stream) StreamID() uint32 {
 	return s.id
 }
 
+func (s *Stream) Close() error {
+
+	close(s.closeReadCh)
+
+	// Need to flush this stream because otherwise the OS buffers can
+	// remain blocked and deadlock new streams due to TCP head-of-line
+	// blocking
+	go func() {
+		for {
+			<-s.recvCh
+		}
+	}()
+
+	return s.CloseWrite()
+}
+
 func (s *Stream) CloseWrite() error {
-	return errors.New("CloseWrite not implemented")
+	if !s.writeClosed.Load() {
+		s.writeClosed.Store(true)
+		close(s.closeWriteCh)
+	}
+	return nil
 }
 
 func (s *Stream) Read(buf []byte) (int, error) {
 
 	if s.recvBuf != nil {
+		var n int
 		if len(s.recvBuf) > len(buf) {
-			copy(buf, s.recvBuf[:len(buf)])
+			n = copy(buf, s.recvBuf[:len(buf)])
 			s.recvBuf = s.recvBuf[len(buf):]
 		} else {
-			copy(buf, s.recvBuf)
+			n = copy(buf, s.recvBuf)
 			s.recvBuf = nil
 		}
 
-		return len(buf), nil
+		return n, nil
 	}
 
 	msg := <-s.recvCh
@@ -234,19 +309,29 @@ func (s *Stream) Read(buf []byte) (int, error) {
 	return len(msg), nil
 }
 
-func (s *Stream) Write(msg []byte) (int, error) {
+func (s *Stream) Write(p []byte) (int, error) {
 
-	buf := make([]byte, len(msg))
+	//buf := make([]byte, len(msg))
 
-	copy(buf, msg)
+	//copy(buf, msg)
 
-	s.sendCh <- buf
+	//s.sendCh <- buf
 
-	return len(msg), nil
-}
+	//return len(msg), nil
 
-func (s *Stream) Close() error {
-	return errors.New("Not implemented")
+	buf := make([]byte, len(p))
+	copy(buf, p)
+
+	select {
+	case s.sendCh <- buf:
+	case _, ok := <-s.closeWriteCh:
+		if !ok {
+			fmt.Println("write closed, returning error")
+			return 0, errors.New("Stream write closed")
+		}
+	}
+
+	return len(buf), nil
 }
 
 func Upgrade(w http.ResponseWriter, r *http.Request) (*Connection, error) {
@@ -317,22 +402,59 @@ func (l *Listener) Accept() (*Connection, error) {
 	return result.conn, result.err
 }
 
-type frameType uint8
-
 type frame struct {
-	frameType      frameType
+	frameType      FrameType
 	syn            bool
 	fin            bool
 	streamId       uint32
 	data           []byte
 	windowIncrease uint32
+	errorCode      uint32
+}
+
+func (f frame) String() string {
+	s := "frame: {\n"
+
+	s += fmt.Sprintf("  frameType: %s\n", f.frameType.String())
+	s += fmt.Sprintf("  streamId: %d\n", +f.streamId)
+	s += fmt.Sprintf("  syn: %t\n", f.syn)
+	s += fmt.Sprintf("  fin: %t\n", f.fin)
+	s += fmt.Sprintf("  len(data): %d\n", len(f.data))
+
+	s += "  data[0:16]: [ "
+	for i := 0; i < 16; i++ {
+		if i >= len(f.data) {
+			break
+		}
+
+		s += fmt.Sprintf("%d ", f.data[i])
+	}
+	s += "]\n"
+
+	str := strconv.Quote(string(f.data))
+	s += "  string(data): "
+	beg := ""
+	end := ""
+	for i := 0; i < len(str); i++ {
+		if i < 32 {
+			beg += string(str[i])
+		}
+		if i > len(str)-32 {
+			end += string(str[i])
+		}
+	}
+	s += fmt.Sprintf("%s...%s\n", beg, end)
+
+	s += "}"
+
+	return s
 }
 
 func packFrame(f *frame) []byte {
 
 	var length uint32 = 0
 
-	if f.frameType == FrameTypeWindowIncrease {
+	if f.frameType == FrameTypeWindowIncrease || f.frameType == FrameTypeReset {
 		length = 4
 	}
 
@@ -363,11 +485,17 @@ func packFrame(f *frame) []byte {
 	buf[6] = byte(f.streamId >> 8)
 	buf[7] = byte(f.streamId)
 
-	if f.frameType == FrameTypeWindowIncrease {
+	switch f.frameType {
+	case FrameTypeWindowIncrease:
 		buf[8] = byte(f.windowIncrease >> 24)
 		buf[9] = byte(f.windowIncrease >> 16)
 		buf[10] = byte(f.windowIncrease >> 8)
 		buf[11] = byte(f.windowIncrease)
+	case FrameTypeReset:
+		buf[8] = byte(f.errorCode >> 24)
+		buf[9] = byte(f.errorCode >> 16)
+		buf[10] = byte(f.errorCode >> 8)
+		buf[11] = byte(f.errorCode)
 	}
 
 	copy(buf[HeaderSize:], f.data)
@@ -392,7 +520,7 @@ func unpackFrame(packedFrame []byte) (*frame, error) {
 	streamId := uint32((fa[4] << 24) | (fa[5] << 16) | (fa[6] << 8) | fa[7])
 
 	return &frame{
-		frameType: frameType(ft),
+		frameType: FrameType(ft),
 		syn:       syn,
 		fin:       fin,
 		streamId:  streamId,
