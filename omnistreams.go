@@ -135,6 +135,7 @@ func (c *Connection) OpenStream() (*Stream, error) {
 	stream := NewStream(streamId, sendCh)
 
 	go func() {
+		// TODO: might not want to send if it was closed by the remote side
 		<-stream.closeReadCh
 		c.sendFrame(&frame{
 			frameType: FrameTypeReset,
@@ -206,12 +207,19 @@ func (c *Connection) handleFrame(f *frame) {
 
 		stream.recvCh <- f.data
 
-		//if f.fin {
-		//        err := stream.Close()
-		//        if err != nil {
-		//                fmt.Println("handleFrame stream.Close():", err)
-		//        }
-		//}
+		if f.fin {
+			err := stream.CloseRead()
+			if err != nil {
+				fmt.Println("stream.CloseRead()", err)
+			}
+
+			// TODO: delete stream at some point. I don't think
+			// this is the right way to do it because I think it would
+			// be a race condition to flush the OS TCP queues.
+			//c.mut.Lock()
+			//delete(c.streams, f.streamId)
+			//c.mut.Unlock()
+		}
 
 		err := c.sendFrame(&frame{
 			frameType:      FrameTypeWindowIncrease,
@@ -235,6 +243,7 @@ type Stream struct {
 	recvBuf      []byte
 	closeReadCh  chan struct{}
 	closeWriteCh chan struct{}
+	readClosed   atomic.Bool
 	writeClosed  atomic.Bool
 }
 
@@ -256,19 +265,34 @@ func (s *Stream) StreamID() uint32 {
 }
 
 func (s *Stream) Close() error {
-
-	close(s.closeReadCh)
-
-	// Need to flush this stream because otherwise the OS buffers can
-	// remain blocked and deadlock new streams due to TCP head-of-line
-	// blocking
-	go func() {
-		for {
-			<-s.recvCh
-		}
-	}()
-
+	err := s.CloseRead()
+	if err != nil {
+		return err
+	}
 	return s.CloseWrite()
+}
+
+func (s *Stream) CloseRead() error {
+	if !s.readClosed.Load() {
+		s.readClosed.Store(true)
+		close(s.closeReadCh)
+
+		// Need to flush this stream because otherwise the OS buffers can
+		// remain blocked and deadlock new streams due to TCP head-of-line
+		// blocking
+		go func() {
+		LOOP:
+			for {
+				select {
+				case <-s.recvCh:
+				default:
+					break LOOP
+				}
+			}
+		}()
+	}
+
+	return nil
 }
 
 func (s *Stream) CloseWrite() error {
@@ -294,7 +318,16 @@ func (s *Stream) Read(buf []byte) (int, error) {
 		return n, nil
 	}
 
-	msg := <-s.recvCh
+	var msg []byte
+
+	select {
+	case msg = <-s.recvCh:
+	case _, ok := <-s.closeReadCh:
+		if !ok {
+			fmt.Println("read closed, returning error")
+			return 0, errors.New("Stream read closed")
+		}
+	}
 
 	if len(msg) > len(buf) {
 		copy(buf, msg[:len(buf)])
