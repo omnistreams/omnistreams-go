@@ -81,9 +81,6 @@ func NewConnection(wsConn *websocket.Conn) *Connection {
 				break
 			}
 
-			//fmt.Println("Received frame:")
-			//fmt.Println(frame)
-
 			go c.handleFrame(frame)
 		}
 	}()
@@ -341,14 +338,6 @@ func (s *Stream) Read(buf []byte) (int, error) {
 }
 
 func (s *Stream) Write(p []byte) (int, error) {
-
-	//buf := make([]byte, len(msg))
-
-	//copy(buf, msg)
-
-	//s.sendCh <- buf
-
-	//return len(msg), nil
 
 	buf := make([]byte, len(p))
 	copy(buf, p)
