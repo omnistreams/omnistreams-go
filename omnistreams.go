@@ -2,6 +2,7 @@ package omnistreams
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ const (
 	FrameTypeReset = iota
 	FrameTypeData
 	FrameTypeWindowIncrease
+	FrameTypeGoAway
 )
 
 func (ft FrameType) String() string {
@@ -32,6 +34,8 @@ func (ft FrameType) String() string {
 		return "FrameTypeData"
 	case FrameTypeWindowIncrease:
 		return "FrameTypeWindowIncrease"
+	case FrameTypeGoAway:
+		return "FrameTypeGoAway"
 	default:
 		return fmt.Sprintf("Unknown frame type: %d", ft)
 	}
@@ -45,14 +49,21 @@ type Connection struct {
 	wsConn       *websocket.Conn
 }
 
-func NewConnection(wsConn *websocket.Conn) *Connection {
+func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 
 	streams := make(map[uint32]*Stream)
 	mut := &sync.Mutex{}
 	streamCh := make(chan *Stream)
 
+	// TODO: Once we break compatibility with muxado, maybe switch this to
+	// match WebTransport, which uses even numbered stream IDs for clients
+	var nextStreamId uint32 = 2
+	if isClient {
+		nextStreamId = 1
+	}
+
 	c := &Connection{
-		nextStreamId: 1,
+		nextStreamId: nextStreamId,
 		streams:      streams,
 		streamCh:     streamCh,
 		mut:          mut,
@@ -97,29 +108,26 @@ func (c *Connection) OpenStream() (*Stream, error) {
 
 	c.mut.Lock()
 	streamId := c.nextStreamId
+	c.nextStreamId += 2
 	c.mut.Unlock()
-
-	frm := &frame{
-		frameType: FrameTypeData,
-		streamId:  streamId,
-		syn:       true,
-	}
-
-	err := c.sendFrame(frm)
-	if err != nil {
-		return nil, err
-	}
 
 	sendCh := make(chan []byte)
 
 	go func() {
+
+		syn := true
 		for {
 			msg := <-sendCh
+
 			frm := &frame{
 				frameType: FrameTypeData,
 				streamId:  streamId,
-				syn:       false,
+				syn:       syn,
 				data:      msg,
+			}
+
+			if syn {
+				syn = false
 			}
 
 			err := c.sendFrame(frm)
@@ -152,7 +160,6 @@ func (c *Connection) OpenStream() (*Stream, error) {
 	}()
 
 	c.mut.Lock()
-	c.nextStreamId += 2
 	c.streams[streamId] = stream
 	c.mut.Unlock()
 
@@ -160,6 +167,9 @@ func (c *Connection) OpenStream() (*Stream, error) {
 }
 
 func (c *Connection) sendFrame(frame *frame) error {
+	//fmt.Println("Send frame")
+	//fmt.Println(frame)
+
 	packedFrame := packFrame(frame)
 	err := c.wsConn.Write(context.Background(), websocket.MessageBinary, packedFrame)
 	if err != nil {
@@ -170,6 +180,9 @@ func (c *Connection) sendFrame(frame *frame) error {
 }
 
 func (c *Connection) handleFrame(f *frame) {
+
+	//fmt.Println("Receive frame")
+	//fmt.Printf("%+v\n", f)
 
 	switch f.frameType {
 	case FrameTypeData:
@@ -218,41 +231,97 @@ func (c *Connection) handleFrame(f *frame) {
 			//c.mut.Unlock()
 		}
 
-		err := c.sendFrame(&frame{
-			frameType:      FrameTypeWindowIncrease,
-			streamId:       stream.id,
-			windowIncrease: uint32(len(f.data)),
-		})
+		if len(f.data) > 0 {
+			err := c.sendFrame(&frame{
+				frameType:      FrameTypeWindowIncrease,
+				streamId:       stream.id,
+				windowIncrease: uint32(len(f.data)),
+			})
 
-		if err != nil {
-			fmt.Println(err)
+			if err != nil {
+				fmt.Println(err)
+			}
 		}
 
+	case FrameTypeWindowIncrease:
+		c.mut.Lock()
+		stream, ok := c.streams[f.streamId]
+		c.mut.Unlock()
+		if !ok {
+			fmt.Println("FrameTypeWindowIncrease: no such stream")
+			return
+		}
+
+		stream.updateWindow(f.windowIncrease)
+	case FrameTypeReset:
+
+		fmt.Println("FrameTypeReset:", f.errorCode)
+
+		c.mut.Lock()
+		stream, ok := c.streams[f.streamId]
+		c.mut.Unlock()
+
+		if !ok {
+			fmt.Println("FrameTypeReset: no such stream", f.streamId)
+			return
+		}
+
+		err := stream.Close()
+		if err != nil {
+			fmt.Println("FrameTypeReset:", err)
+		}
 	default:
 		fmt.Println("Frame type not implemented:", f.frameType)
 	}
 }
 
 type Stream struct {
-	id           uint32
-	recvCh       chan []byte
-	sendCh       chan []byte
-	recvBuf      []byte
-	closeReadCh  chan struct{}
-	closeWriteCh chan struct{}
-	readClosed   atomic.Bool
-	writeClosed  atomic.Bool
+	id             uint32
+	recvCh         chan []byte
+	sendCh         chan []byte
+	sendWindow     uint32
+	windowUpdateCh chan uint32
+	writeCh        chan []byte
+	recvBuf        []byte
+	closeReadCh    chan struct{}
+	closeWriteCh   chan struct{}
+	readClosed     atomic.Bool
+	writeClosed    atomic.Bool
 }
 
 func NewStream(streamId uint32, sendCh chan []byte) *Stream {
 
+	writeCh := make(chan []byte)
+
 	stream := &Stream{
-		id:           streamId,
-		recvCh:       make(chan []byte),
-		sendCh:       sendCh,
-		closeReadCh:  make(chan struct{}),
-		closeWriteCh: make(chan struct{}),
+		id:             streamId,
+		recvCh:         make(chan []byte),
+		sendCh:         sendCh,
+		windowUpdateCh: make(chan uint32),
+		writeCh:        writeCh,
+		sendWindow:     256 * 1024,
+		closeReadCh:    make(chan struct{}),
+		closeWriteCh:   make(chan struct{}),
 	}
+
+	go func() {
+		for {
+			msg := <-writeCh
+
+			msgLen := uint32(len(msg))
+
+			for {
+				if stream.sendWindow >= msgLen {
+					sendCh <- msg
+					stream.sendWindow -= msgLen
+					break
+				} else {
+					windowIncrease := <-stream.windowUpdateCh
+					stream.sendWindow += windowIncrease
+				}
+			}
+		}
+	}()
 
 	return stream
 }
@@ -343,7 +412,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 	copy(buf, p)
 
 	select {
-	case s.sendCh <- buf:
+	case s.writeCh <- buf:
 	case _, ok := <-s.closeWriteCh:
 		if !ok {
 			fmt.Println("write closed, returning error")
@@ -352,6 +421,10 @@ func (s *Stream) Write(p []byte) (int, error) {
 	}
 
 	return len(buf), nil
+}
+
+func (s *Stream) updateWindow(windowUpdate uint32) {
+	s.windowUpdateCh <- windowUpdate
 }
 
 func Upgrade(w http.ResponseWriter, r *http.Request) (*Connection, error) {
@@ -363,7 +436,7 @@ func Upgrade(w http.ResponseWriter, r *http.Request) (*Connection, error) {
 		return nil, err
 	}
 
-	s := NewConnection(wsConn)
+	s := NewConnection(wsConn, false)
 
 	return s, nil
 }
@@ -539,13 +612,24 @@ func unpackFrame(packedFrame []byte) (*frame, error) {
 	}
 	streamId := uint32((fa[4] << 24) | (fa[5] << 16) | (fa[6] << 8) | fa[7])
 
-	return &frame{
+	frame := &frame{
 		frameType: FrameType(ft),
 		syn:       syn,
 		fin:       fin,
 		streamId:  streamId,
 		data:      packedFrame[HeaderSize:],
-	}, nil
+	}
+
+	switch frame.frameType {
+	case FrameTypeWindowIncrease:
+		data := packedFrame[HeaderSize:]
+		frame.windowIncrease = binary.BigEndian.Uint32(data)
+	case FrameTypeReset:
+		data := packedFrame[HeaderSize:]
+		frame.errorCode = binary.BigEndian.Uint32(data)
+	}
+
+	return frame, nil
 }
 
 func printJson(data interface{}) {
