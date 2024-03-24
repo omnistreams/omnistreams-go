@@ -24,6 +24,7 @@ const (
 	FrameTypeData
 	FrameTypeWindowIncrease
 	FrameTypeGoAway
+	FrameTypeMessage
 )
 
 func (ft FrameType) String() string {
@@ -42,11 +43,12 @@ func (ft FrameType) String() string {
 }
 
 type Connection struct {
-	nextStreamId uint32
-	streams      map[uint32]*Stream
-	streamCh     chan *Stream
-	mut          *sync.Mutex
-	wsConn       *websocket.Conn
+	nextStreamId   uint32
+	streams        map[uint32]*Stream
+	streamCh       chan *Stream
+	mut            *sync.Mutex
+	wsConn         *websocket.Conn
+	datagramStream *Stream
 }
 
 func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
@@ -62,13 +64,37 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 		nextStreamId = 1
 	}
 
+	datagramSendCh := make(chan []byte)
+
+	datagramStream := NewStream(0, datagramSendCh)
+
+	streams[0] = datagramStream
+
 	c := &Connection{
-		nextStreamId: nextStreamId,
-		streams:      streams,
-		streamCh:     streamCh,
-		mut:          mut,
-		wsConn:       wsConn,
+		nextStreamId:   nextStreamId,
+		streams:        streams,
+		streamCh:       streamCh,
+		mut:            mut,
+		wsConn:         wsConn,
+		datagramStream: datagramStream,
 	}
+
+	go func() {
+
+		for {
+			msg := <-datagramSendCh
+
+			frm := &frame{
+				frameType: FrameTypeMessage,
+				data:      msg,
+			}
+
+			err := c.sendFrame(frm)
+			if err != nil {
+				fmt.Println("TODO dgram send:", err)
+			}
+		}
+	}()
 
 	go func() {
 
@@ -97,6 +123,14 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 	}()
 
 	return c
+}
+
+func (c *Connection) ReceiveMessage() ([]byte, error) {
+	return c.datagramStream.ReadMessage()
+}
+
+func (c *Connection) SendMessage(msg []byte) error {
+	return c.datagramStream.WriteMessage(msg)
 }
 
 func (c *Connection) AcceptStream() (*Stream, error) {
@@ -185,6 +219,8 @@ func (c *Connection) handleFrame(f *frame) {
 	//fmt.Printf("%+v\n", f)
 
 	switch f.frameType {
+	case FrameTypeMessage:
+		fallthrough
 	case FrameTypeData:
 		c.mut.Lock()
 		stream, ok := c.streams[f.streamId]
@@ -367,6 +403,39 @@ func (s *Stream) CloseWrite() error {
 		close(s.closeWriteCh)
 	}
 	return nil
+}
+
+func (s *Stream) ReadMessage() ([]byte, error) {
+	select {
+	case msg := <-s.recvCh:
+		return msg, nil
+	case _, ok := <-s.closeReadCh:
+		if !ok {
+			fmt.Println("ReadMessage: read closed, returning error")
+			return nil, errors.New("Stream read closed")
+		}
+	}
+
+	return nil, errors.New("ReadMessage failed for unknown reason")
+
+}
+
+func (s *Stream) WriteMessage(msg []byte) error {
+
+	buf := make([]byte, len(msg))
+	copy(buf, msg)
+
+	select {
+	case s.writeCh <- buf:
+		return nil
+	case _, ok := <-s.closeWriteCh:
+		if !ok {
+			fmt.Println("write closed, returning error")
+			return errors.New("Stream write closed")
+		}
+	}
+
+	return errors.New("WriteMessage failed for unknown reason")
 }
 
 func (s *Stream) Read(buf []byte) (int, error) {
@@ -627,6 +696,8 @@ func unpackFrame(packedFrame []byte) (*frame, error) {
 	case FrameTypeReset:
 		data := packedFrame[HeaderSize:]
 		frame.errorCode = binary.BigEndian.Uint32(data)
+	case FrameTypeMessage:
+		frame.streamId = 0
 	}
 
 	return frame, nil
