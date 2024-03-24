@@ -642,22 +642,14 @@ func packFrame(f *frame) []byte {
 	buf[1] = byte(length >> 8)
 	buf[2] = byte(length)
 	buf[3] = byte(f.frameType<<4) | byte(flags)
-	buf[4] = byte(f.streamId >> 24)
-	buf[5] = byte(f.streamId >> 16)
-	buf[6] = byte(f.streamId >> 8)
-	buf[7] = byte(f.streamId)
+
+	binary.BigEndian.PutUint32(buf[4:8], f.streamId)
 
 	switch f.frameType {
 	case FrameTypeWindowIncrease:
-		buf[8] = byte(f.windowIncrease >> 24)
-		buf[9] = byte(f.windowIncrease >> 16)
-		buf[10] = byte(f.windowIncrease >> 8)
-		buf[11] = byte(f.windowIncrease)
+		binary.BigEndian.PutUint32(buf[8:12], f.windowIncrease)
 	case FrameTypeReset:
-		buf[8] = byte(f.errorCode >> 24)
-		buf[9] = byte(f.errorCode >> 16)
-		buf[10] = byte(f.errorCode >> 8)
-		buf[11] = byte(f.errorCode)
+		binary.BigEndian.PutUint32(buf[8:12], f.errorCode)
 	}
 
 	copy(buf[HeaderSize:], f.data)
@@ -679,7 +671,8 @@ func unpackFrame(packedFrame []byte) (*frame, error) {
 	if (flags & 0b0010) != 0 {
 		syn = true
 	}
-	streamId := uint32((fa[4] << 24) | (fa[5] << 16) | (fa[6] << 8) | fa[7])
+
+	streamId := binary.BigEndian.Uint32(fa[4:8])
 
 	frame := &frame{
 		frameType: FrameType(ft),
