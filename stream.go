@@ -59,7 +59,10 @@ func (s *Stream) CloseRead() error {
 		LOOP:
 			for {
 				select {
-				case <-s.recvCh:
+				case _, ok := <-s.recvCh:
+					if !ok {
+						break LOOP
+					}
 				default:
 					break LOOP
 				}
