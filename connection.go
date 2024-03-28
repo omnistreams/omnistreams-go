@@ -78,7 +78,8 @@ func (c *Connection) ReceiveMessage() ([]byte, error) {
 }
 
 func (c *Connection) SendMessage(msg []byte) error {
-	return c.datagramStream.WriteMessage(msg)
+	_, err := c.datagramStream.Write(msg)
+	return err
 }
 
 func (c *Connection) AcceptStream() (*Stream, error) {
