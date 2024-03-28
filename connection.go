@@ -30,37 +30,19 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 		nextStreamId = 1
 	}
 
-	datagramSendCh := make(chan []byte)
-
-	datagramStream := NewStream(0, datagramSendCh)
-
-	streams[0] = datagramStream
-
 	c := &Connection{
-		nextStreamId:   nextStreamId,
-		streams:        streams,
-		streamCh:       streamCh,
-		mut:            mut,
-		wsConn:         wsConn,
-		datagramStream: datagramStream,
+		nextStreamId: nextStreamId,
+		streams:      streams,
+		streamCh:     streamCh,
+		mut:          mut,
+		wsConn:       wsConn,
 	}
 
-	go func() {
+	datagramStream := c.newStream(0, false)
 
-		for {
-			msg := <-datagramSendCh
+	c.datagramStream = datagramStream
 
-			frm := &frame{
-				frameType: FrameTypeMessage,
-				data:      msg,
-			}
-
-			err := c.sendFrame(frm)
-			if err != nil {
-				fmt.Println("TODO dgram send:", err)
-			}
-		}
-	}()
+	streams[0] = datagramStream
 
 	go func() {
 
@@ -111,57 +93,7 @@ func (c *Connection) OpenStream() (*Stream, error) {
 	c.nextStreamId += 2
 	c.mut.Unlock()
 
-	sendCh := make(chan []byte)
-
-	go func() {
-
-		syn := true
-		for {
-			msg := <-sendCh
-
-			frm := &frame{
-				frameType: FrameTypeData,
-				streamId:  streamId,
-				syn:       syn,
-				data:      msg,
-			}
-
-			if syn {
-				syn = false
-			}
-
-			err := c.sendFrame(frm)
-			if err != nil {
-				fmt.Println("TODO:", err)
-			}
-		}
-	}()
-
-	stream := NewStream(streamId, sendCh)
-
-	go func() {
-		// TODO: might not want to send if it was closed by the remote side
-		<-stream.closeReadCh
-		c.sendFrame(&frame{
-			frameType: FrameTypeReset,
-			streamId:  streamId,
-			errorCode: 42,
-		})
-	}()
-
-	go func() {
-		<-stream.closeWriteCh
-		c.sendFrame(&frame{
-			frameType: FrameTypeData,
-			streamId:  streamId,
-			syn:       false,
-			fin:       true,
-		})
-	}()
-
-	c.mut.Lock()
-	c.streams[streamId] = stream
-	c.mut.Unlock()
+	stream := c.newStream(streamId, true)
 
 	return stream, nil
 }
@@ -192,38 +124,20 @@ func (c *Connection) handleFrame(f *frame) {
 		stream, ok := c.streams[f.streamId]
 		c.mut.Unlock()
 		if !ok {
-			sendCh := make(chan []byte)
-			stream = NewStream(f.streamId, sendCh)
-
-			go func() {
-				for {
-					msg := <-sendCh
-					err := c.sendFrame(&frame{
-						frameType: FrameTypeData,
-						streamId:  stream.id,
-						data:      msg,
-					})
-
-					if err != nil {
-						fmt.Println(err)
-					}
-				}
-			}()
+			stream = c.newStream(f.streamId, false)
 
 			c.streamCh <- stream
-
-			c.mut.Lock()
-			c.streams[f.streamId] = stream
-			c.mut.Unlock()
 		}
 
 		stream.recvCh <- f.data
 
 		if f.fin {
-			err := stream.CloseRead()
-			if err != nil {
-				fmt.Println("stream.CloseRead()", err)
-			}
+			close(stream.recvCh)
+			//fmt.Println("here50")
+			//err := stream.CloseRead()
+			//if err != nil {
+			//	fmt.Println("stream.CloseRead()", err)
+			//}
 
 			// TODO: delete stream at some point. I don't think
 			// this is the right way to do it because I think it would
@@ -275,4 +189,63 @@ func (c *Connection) handleFrame(f *frame) {
 	default:
 		fmt.Println("Frame type not implemented:", f.frameType)
 	}
+}
+
+func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
+
+	sendCh := make(chan []byte)
+
+	stream := NewStream(streamId, sendCh)
+
+	// TODO: I think these goroutines can be combined somewhat. Also need
+	// to make sure they don't leak
+
+	go func() {
+	LOOP:
+		for {
+			select {
+			case msg := <-sendCh:
+
+				frm := &frame{
+					frameType: FrameTypeData,
+					streamId:  streamId,
+					syn:       syn,
+					data:      msg,
+				}
+
+				if syn {
+					syn = false
+				}
+
+				err := c.sendFrame(frm)
+				if err != nil {
+					fmt.Println("TODO:", err)
+				}
+			case <-stream.closeWriteCh:
+				c.sendFrame(&frame{
+					frameType: FrameTypeData,
+					streamId:  streamId,
+					syn:       false,
+					fin:       true,
+				})
+				break LOOP
+			}
+		}
+	}()
+
+	go func() {
+		// TODO: might not want to send if it was closed by the remote side
+		<-stream.closeReadCh
+		c.sendFrame(&frame{
+			frameType: FrameTypeReset,
+			streamId:  streamId,
+			errorCode: 42,
+		})
+	}()
+
+	c.mut.Lock()
+	c.streams[streamId] = stream
+	c.mut.Unlock()
+
+	return stream
 }

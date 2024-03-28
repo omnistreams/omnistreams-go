@@ -3,6 +3,7 @@ package omnistreams
 import (
 	"errors"
 	"fmt"
+	"io"
 	"sync/atomic"
 )
 
@@ -12,7 +13,6 @@ type Stream struct {
 	sendCh         chan []byte
 	sendWindow     uint32
 	windowUpdateCh chan uint32
-	writeCh        chan []byte
 	recvBuf        []byte
 	closeReadCh    chan struct{}
 	closeWriteCh   chan struct{}
@@ -22,37 +22,15 @@ type Stream struct {
 
 func NewStream(streamId uint32, sendCh chan []byte) *Stream {
 
-	writeCh := make(chan []byte)
-
 	stream := &Stream{
 		id:             streamId,
 		recvCh:         make(chan []byte),
 		sendCh:         sendCh,
 		windowUpdateCh: make(chan uint32),
-		writeCh:        writeCh,
 		sendWindow:     256 * 1024,
 		closeReadCh:    make(chan struct{}),
 		closeWriteCh:   make(chan struct{}),
 	}
-
-	go func() {
-		for {
-			msg := <-writeCh
-
-			msgLen := uint32(len(msg))
-
-			for {
-				if stream.sendWindow >= msgLen {
-					sendCh <- msg
-					stream.sendWindow -= msgLen
-					break
-				} else {
-					windowIncrease := <-stream.windowUpdateCh
-					stream.sendWindow += windowIncrease
-				}
-			}
-		}
-	}()
 
 	return stream
 }
@@ -102,7 +80,10 @@ func (s *Stream) CloseWrite() error {
 
 func (s *Stream) ReadMessage() ([]byte, error) {
 	select {
-	case msg := <-s.recvCh:
+	case msg, ok := <-s.recvCh:
+		if !ok {
+			return nil, io.EOF
+		}
 		return msg, nil
 	case _, ok := <-s.closeReadCh:
 		if !ok {
@@ -116,21 +97,22 @@ func (s *Stream) ReadMessage() ([]byte, error) {
 }
 
 func (s *Stream) WriteMessage(msg []byte) error {
+	return errors.New("WriteMessage not implemented")
 
-	buf := make([]byte, len(msg))
-	copy(buf, msg)
+	//buf := make([]byte, len(msg))
+	//copy(buf, msg)
 
-	select {
-	case s.writeCh <- buf:
-		return nil
-	case _, ok := <-s.closeWriteCh:
-		if !ok {
-			fmt.Println("write closed, returning error")
-			return errors.New("Stream write closed")
-		}
-	}
+	//select {
+	//case s.writeCh <- buf:
+	//	return nil
+	//case _, ok := <-s.closeWriteCh:
+	//	if !ok {
+	//		fmt.Println("write closed, returning error")
+	//		return errors.New("Stream write closed")
+	//	}
+	//}
 
-	return errors.New("WriteMessage failed for unknown reason")
+	//return errors.New("WriteMessage failed for unknown reason")
 }
 
 func (s *Stream) Read(buf []byte) (int, error) {
@@ -150,8 +132,12 @@ func (s *Stream) Read(buf []byte) (int, error) {
 
 	var msg []byte
 
+	var ok bool
 	select {
-	case msg = <-s.recvCh:
+	case msg, ok = <-s.recvCh:
+		if !ok {
+			return 0, io.EOF
+		}
 	case _, ok := <-s.closeReadCh:
 		if !ok {
 			fmt.Println("read closed, returning error")
@@ -175,12 +161,23 @@ func (s *Stream) Write(p []byte) (int, error) {
 	buf := make([]byte, len(p))
 	copy(buf, p)
 
-	select {
-	case s.writeCh <- buf:
-	case _, ok := <-s.closeWriteCh:
-		if !ok {
-			fmt.Println("write closed, returning error")
-			return 0, errors.New("Stream write closed")
+	msgLen := uint32(len(buf))
+
+	for {
+		if s.sendWindow >= msgLen {
+			s.sendCh <- buf
+			s.sendWindow -= msgLen
+			break
+		} else {
+			select {
+			case windowIncrease := <-s.windowUpdateCh:
+				s.sendWindow += windowIncrease
+			case _, ok := <-s.closeWriteCh:
+				if !ok {
+					fmt.Println("write closed, returning error")
+					return 0, errors.New("Stream write closed")
+				}
+			}
 		}
 	}
 
