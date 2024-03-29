@@ -9,12 +9,12 @@ import (
 )
 
 type Connection struct {
-	nextStreamId   uint32
-	streams        map[uint32]*Stream
-	streamCh       chan *Stream
-	mut            *sync.Mutex
-	wsConn         *websocket.Conn
-	datagramStream *Stream
+	nextStreamId  uint32
+	streams       map[uint32]*Stream
+	streamCh      chan *Stream
+	mut           *sync.Mutex
+	wsConn        *websocket.Conn
+	messageStream *Stream
 }
 
 func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
@@ -38,11 +38,11 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 		wsConn:       wsConn,
 	}
 
-	datagramStream := c.newStream(0, false)
+	messageStream := c.newStream(0, false)
 
-	c.datagramStream = datagramStream
+	c.messageStream = messageStream
 
-	streams[0] = datagramStream
+	streams[0] = messageStream
 
 	go func() {
 
@@ -74,11 +74,11 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 }
 
 func (c *Connection) ReceiveMessage() ([]byte, error) {
-	return c.datagramStream.ReadMessage()
+	return c.messageStream.ReadMessage()
 }
 
 func (c *Connection) SendMessage(msg []byte) error {
-	_, err := c.datagramStream.Write(msg)
+	_, err := c.messageStream.Write(msg)
 	return err
 }
 
