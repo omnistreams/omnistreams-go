@@ -149,6 +149,7 @@ func (c *Connection) handleFrame(f *frame) {
 		}
 
 		if len(f.data) > 0 {
+			// TODO: should maybe be doing this in a goroutine
 			err := c.sendFrame(&frame{
 				frameType:      FrameTypeWindowIncrease,
 				streamId:       stream.id,
