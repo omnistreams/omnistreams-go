@@ -4,20 +4,23 @@ import (
 	"context"
 	"fmt"
 	"sync"
-
-	"nhooyr.io/websocket"
 )
+
+type ChunkStream interface {
+	Read(context.Context) ([]byte, error)
+	Write(context.Context, []byte) error
+}
 
 type Connection struct {
 	nextStreamId  uint32
 	streams       map[uint32]*Stream
 	streamCh      chan *Stream
 	mut           *sync.Mutex
-	wsConn        *websocket.Conn
+	chunkStream   ChunkStream
 	messageStream *Stream
 }
 
-func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
+func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
 	streams := make(map[uint32]*Stream)
 	mut := &sync.Mutex{}
@@ -35,7 +38,7 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 		streams:      streams,
 		streamCh:     streamCh,
 		mut:          mut,
-		wsConn:       wsConn,
+		chunkStream:  chunkStream,
 	}
 
 	messageStream := c.newStream(0, false)
@@ -49,16 +52,16 @@ func NewConnection(wsConn *websocket.Conn, isClient bool) *Connection {
 		ctx := context.Background()
 
 		for {
-			msgType, msgBytes, err := wsConn.Read(ctx)
+			msgBytes, err := chunkStream.Read(ctx)
 			if err != nil {
-				fmt.Println("Error wsConn.Read", err)
+				fmt.Println("Error chunkStream.Read", err)
 				break
 			}
 
-			if msgType != websocket.MessageBinary {
-				fmt.Println("Invalid message type")
-				break
-			}
+			//if msgType != websocket.MessageBinary {
+			//	fmt.Println("Invalid message type")
+			//	break
+			//}
 
 			frame, err := unpackFrame(msgBytes)
 			if err != nil {
@@ -104,7 +107,7 @@ func (c *Connection) sendFrame(frame *frame) error {
 	//fmt.Println(frame)
 
 	packedFrame := packFrame(frame)
-	err := c.wsConn.Write(context.Background(), websocket.MessageBinary, packedFrame)
+	err := c.chunkStream.Write(context.Background(), packedFrame)
 	if err != nil {
 		return err
 	}
