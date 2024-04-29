@@ -18,7 +18,11 @@ type Connection struct {
 	mut           *sync.Mutex
 	chunkStream   ChunkStream
 	messageStream *Stream
+	eventCh       chan Event
 }
+
+type Event interface{}
+type StreamCreatedEvent struct{}
 
 func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
@@ -74,6 +78,12 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 	}()
 
 	return c
+}
+
+func (c *Connection) Events() chan Event {
+	eventCh := make(chan Event, 1)
+	c.eventCh = eventCh
+	return eventCh
 }
 
 func (c *Connection) ReceiveMessage() ([]byte, error) {
@@ -251,6 +261,10 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 	c.mut.Lock()
 	c.streams[streamId] = stream
 	c.mut.Unlock()
+
+	if c.eventCh != nil {
+		c.eventCh <- &StreamCreatedEvent{}
+	}
 
 	return stream
 }
