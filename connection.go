@@ -23,6 +23,7 @@ type Connection struct {
 
 type Event interface{}
 type StreamCreatedEvent struct{}
+type StreamDeletedEvent struct{}
 
 func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
@@ -138,6 +139,13 @@ func (c *Connection) handleFrame(f *frame) {
 		stream, ok := c.streams[f.streamId]
 		c.mut.Unlock()
 		if !ok {
+			// If syn isn't set this is likely a packet for a recently RST stream; ignore the frame
+			// TODO: might want to have more advanced logic. Maybe keeping streams unavailable for
+			// a while so we can specifically detect send on RST stream conditions
+			if !f.syn {
+				break
+			}
+
 			stream = c.newStream(f.streamId, false)
 
 			c.streamCh <- stream
@@ -212,6 +220,21 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 	stream := NewStream(streamId, sendCh)
 
+	readClosed := false
+	writeClosed := false
+	checkClosed := func() {
+		if readClosed && writeClosed {
+			c.mut.Lock()
+			delete(c.streams, streamId)
+			c.mut.Unlock()
+
+			if c.eventCh != nil {
+				c.eventCh <- &StreamDeletedEvent{}
+			}
+		}
+
+	}
+
 	// TODO: I think these goroutines can be combined somewhat. Also need
 	// to make sure they don't leak
 
@@ -243,6 +266,10 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 					syn:       false,
 					fin:       true,
 				})
+
+				writeClosed = true
+				checkClosed()
+
 				break LOOP
 			}
 		}
@@ -256,6 +283,9 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 			streamId:  streamId,
 			errorCode: 42,
 		})
+
+		readClosed = true
+		checkClosed()
 	}()
 
 	c.mut.Lock()
