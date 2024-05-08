@@ -26,7 +26,7 @@ func NewStream(streamId uint32, sendCh chan []byte) *Stream {
 		id:             streamId,
 		recvCh:         make(chan []byte),
 		sendCh:         sendCh,
-		windowUpdateCh: make(chan uint32),
+		windowUpdateCh: make(chan uint32, 1),
 		sendWindow:     256 * 1024,
 		closeReadCh:    make(chan struct{}),
 		closeWriteCh:   make(chan struct{}),
