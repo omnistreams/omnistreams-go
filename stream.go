@@ -2,8 +2,8 @@ package omnistreams
 
 import (
 	"errors"
-	"fmt"
 	"io"
+	"log"
 	"sync/atomic"
 )
 
@@ -16,6 +16,7 @@ type Stream struct {
 	recvBuf        []byte
 	closeReadCh    chan struct{}
 	closeWriteCh   chan struct{}
+	remoteCloseCh  chan struct{}
 	readClosed     atomic.Bool
 	writeClosed    atomic.Bool
 }
@@ -30,6 +31,7 @@ func NewStream(streamId uint32, sendCh chan []byte) *Stream {
 		sendWindow:     256 * 1024,
 		closeReadCh:    make(chan struct{}),
 		closeWriteCh:   make(chan struct{}),
+		remoteCloseCh:  make(chan struct{}),
 	}
 
 	return stream
@@ -90,7 +92,7 @@ func (s *Stream) ReadMessage() ([]byte, error) {
 		return msg, nil
 	case _, ok := <-s.closeReadCh:
 		if !ok {
-			fmt.Println("ReadMessage: read closed, returning error")
+			log.Println("ReadMessage: read closed, returning error")
 			return nil, errors.New("Stream read closed")
 		}
 	}
@@ -143,7 +145,7 @@ func (s *Stream) Read(buf []byte) (int, error) {
 		}
 	case _, ok := <-s.closeReadCh:
 		if !ok {
-			fmt.Println("read closed, returning error")
+			log.Println("read closed, returning error")
 			return 0, errors.New("Stream read closed")
 		}
 	}
@@ -177,7 +179,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 				s.sendWindow += windowIncrease
 			case _, ok := <-s.closeWriteCh:
 				if !ok {
-					fmt.Println("write closed, returning error")
+					log.Println("write closed, returning error")
 					return 0, errors.New("Stream write closed")
 				}
 			}

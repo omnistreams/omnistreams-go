@@ -2,7 +2,7 @@ package omnistreams
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"sync"
 )
 
@@ -24,6 +24,7 @@ type Connection struct {
 type Event interface{}
 type StreamCreatedEvent struct{}
 type StreamDeletedEvent struct{}
+type DebugEvent int
 
 func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
@@ -59,7 +60,7 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 		for {
 			msgBytes, err := chunkStream.Read(ctx)
 			if err != nil {
-				fmt.Println("Error chunkStream.Read", err)
+				log.Println("Error chunkStream.Read", err)
 				break
 			}
 
@@ -70,12 +71,17 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
 			frame, err := unpackFrame(msgBytes)
 			if err != nil {
-				fmt.Println("Error unpackFrame", err)
+				log.Println("Error unpackFrame", err)
 				break
 			}
 
 			go c.handleFrame(frame)
 		}
+
+		// TODO: make thread safe
+		messageStream.Close()
+		close(c.eventCh)
+		c.eventCh = nil
 	}()
 
 	return c
@@ -135,6 +141,7 @@ func (c *Connection) handleFrame(f *frame) {
 	case FrameTypeMessage:
 		fallthrough
 	case FrameTypeData:
+
 		c.mut.Lock()
 		stream, ok := c.streams[f.streamId]
 		c.mut.Unlock()
@@ -155,18 +162,7 @@ func (c *Connection) handleFrame(f *frame) {
 
 		if f.fin {
 			close(stream.recvCh)
-			//fmt.Println("here50")
-			//err := stream.CloseRead()
-			//if err != nil {
-			//	fmt.Println("stream.CloseRead()", err)
-			//}
-
-			// TODO: delete stream at some point. I don't think
-			// this is the right way to do it because I think it would
-			// be a race condition to flush the OS TCP queues.
-			//c.mut.Lock()
-			//delete(c.streams, f.streamId)
-			//c.mut.Unlock()
+			close(stream.remoteCloseCh)
 		}
 
 		if len(f.data) > 0 {
@@ -178,7 +174,7 @@ func (c *Connection) handleFrame(f *frame) {
 			})
 
 			if err != nil {
-				fmt.Println(err)
+				log.Println(err)
 			}
 		}
 
@@ -187,30 +183,30 @@ func (c *Connection) handleFrame(f *frame) {
 		stream, ok := c.streams[f.streamId]
 		c.mut.Unlock()
 		if !ok {
-			fmt.Println("FrameTypeWindowIncrease: no such stream")
+			log.Println("FrameTypeWindowIncrease: no such stream")
 			return
 		}
 
 		stream.updateWindow(f.windowIncrease)
 	case FrameTypeReset:
 
-		fmt.Println("FrameTypeReset:", f.errorCode)
+		log.Println("FrameTypeReset:", f.errorCode)
 
 		c.mut.Lock()
 		stream, ok := c.streams[f.streamId]
 		c.mut.Unlock()
 
 		if !ok {
-			fmt.Println("FrameTypeReset: no such stream", f.streamId)
+			log.Println("FrameTypeReset: no such stream", f.streamId)
 			return
 		}
 
 		err := stream.Close()
 		if err != nil {
-			fmt.Println("FrameTypeReset:", err)
+			log.Println("FrameTypeReset:", err)
 		}
 	default:
-		fmt.Println("Frame type not implemented:", f.frameType)
+		log.Println("Frame type not implemented:", f.frameType)
 	}
 }
 
@@ -257,7 +253,7 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 				err := c.sendFrame(frm)
 				if err != nil {
-					fmt.Println("TODO:", err)
+					log.Println("TODO:", err)
 				}
 			case <-stream.closeWriteCh:
 				c.sendFrame(&frame{
@@ -276,16 +272,26 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 	}()
 
 	go func() {
-		// TODO: might not want to send if it was closed by the remote side
-		<-stream.closeReadCh
-		c.sendFrame(&frame{
-			frameType: FrameTypeReset,
-			streamId:  streamId,
-			errorCode: 42,
-		})
+		if c.eventCh != nil {
+			c.eventCh <- DebugEvent(1)
+		}
+
+		select {
+		case <-stream.remoteCloseCh:
+		case <-stream.closeReadCh:
+			c.sendFrame(&frame{
+				frameType: FrameTypeReset,
+				streamId:  streamId,
+				errorCode: 42,
+			})
+		}
 
 		readClosed = true
 		checkClosed()
+
+		if c.eventCh != nil {
+			c.eventCh <- DebugEvent(-1)
+		}
 	}()
 
 	c.mut.Lock()
