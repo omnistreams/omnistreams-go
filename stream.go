@@ -19,19 +19,29 @@ type Stream struct {
 	remoteCloseCh  chan struct{}
 	readClosed     atomic.Bool
 	writeClosed    atomic.Bool
+	recvWindowCh   chan windowUpdateEvent
 }
 
-func NewStream(streamId uint32, sendCh chan []byte) *Stream {
+type windowUpdateEvent struct {
+	streamId     uint32
+	windowUpdate uint32
+}
+
+func NewStream(streamId uint32, sendCh chan []byte, recvWindowCh chan windowUpdateEvent) *Stream {
 
 	stream := &Stream{
-		id:             streamId,
-		recvCh:         make(chan []byte),
+		id: streamId,
+		// TODO: using a channel as a buffer here is pretty hacky. Instead we should never block sends
+		// to recvCh and check against the receive window. If there's too much data coming in we
+		// need to reset the connection because that means the sender is exceeding the window.
+		recvCh:         make(chan []byte, 10),
 		sendCh:         sendCh,
 		windowUpdateCh: make(chan uint32, 1),
 		sendWindow:     256 * 1024,
 		closeReadCh:    make(chan struct{}),
 		closeWriteCh:   make(chan struct{}),
 		remoteCloseCh:  make(chan struct{}),
+		recvWindowCh:   recvWindowCh,
 	}
 
 	return stream
@@ -147,6 +157,13 @@ func (s *Stream) Read(buf []byte) (int, error) {
 		if !ok {
 			log.Println("read closed, returning error")
 			return 0, errors.New("Stream read closed")
+		}
+	}
+
+	if len(msg) > 0 {
+		s.recvWindowCh <- windowUpdateEvent{
+			streamId:     s.id,
+			windowUpdate: uint32(len(msg)),
 		}
 	}
 

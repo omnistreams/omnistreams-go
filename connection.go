@@ -12,13 +12,14 @@ type ChunkStream interface {
 }
 
 type Connection struct {
-	nextStreamId  uint32
-	streams       map[uint32]*Stream
-	streamCh      chan *Stream
-	mut           *sync.Mutex
-	chunkStream   ChunkStream
-	messageStream *Stream
-	eventCh       chan Event
+	nextStreamId       uint32
+	streams            map[uint32]*Stream
+	streamCh           chan *Stream
+	mut                *sync.Mutex
+	chunkStream        ChunkStream
+	messageStream      *Stream
+	recvWindowUpdateCh chan windowUpdateEvent
+	eventCh            chan Event
 }
 
 type Event interface{}
@@ -39,12 +40,15 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 		nextStreamId = 1
 	}
 
+	recvWindowUpdateCh := make(chan windowUpdateEvent)
+
 	c := &Connection{
-		nextStreamId: nextStreamId,
-		streams:      streams,
-		streamCh:     streamCh,
-		mut:          mut,
-		chunkStream:  chunkStream,
+		nextStreamId:       nextStreamId,
+		streams:            streams,
+		streamCh:           streamCh,
+		mut:                mut,
+		chunkStream:        chunkStream,
+		recvWindowUpdateCh: recvWindowUpdateCh,
 	}
 
 	messageStream := c.newStream(0, false)
@@ -75,13 +79,27 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 				break
 			}
 
-			go c.handleFrame(frame)
+			c.handleFrame(frame)
 		}
 
 		// TODO: make thread safe
 		messageStream.Close()
 		close(c.eventCh)
 		c.eventCh = nil
+	}()
+
+	go func() {
+		for evt := range recvWindowUpdateCh {
+			err := c.sendFrame(&frame{
+				frameType:      FrameTypeWindowIncrease,
+				streamId:       evt.streamId,
+				windowIncrease: evt.windowUpdate,
+			})
+
+			if err != nil {
+				log.Println(err)
+			}
+		}
 	}()
 
 	return c
@@ -110,11 +128,12 @@ func (c *Connection) AcceptStream() (*Stream, error) {
 func (c *Connection) OpenStream() (*Stream, error) {
 
 	c.mut.Lock()
+
 	streamId := c.nextStreamId
 	c.nextStreamId += 2
-	c.mut.Unlock()
-
 	stream := c.newStream(streamId, true)
+
+	c.mut.Unlock()
 
 	return stream, nil
 }
@@ -137,15 +156,14 @@ func (c *Connection) handleFrame(f *frame) {
 	//fmt.Println("Receive frame")
 	//fmt.Printf("%+v\n", f)
 
+	stream, streamExists := c.streams[f.streamId]
+
 	switch f.frameType {
 	case FrameTypeMessage:
 		fallthrough
 	case FrameTypeData:
 
-		c.mut.Lock()
-		stream, ok := c.streams[f.streamId]
-		c.mut.Unlock()
-		if !ok {
+		if !streamExists {
 			// If syn isn't set this is likely a packet for a recently RST stream; ignore the frame
 			// TODO: might want to have more advanced logic. Maybe keeping streams unavailable for
 			// a while so we can specifically detect send on RST stream conditions
@@ -163,48 +181,29 @@ func (c *Connection) handleFrame(f *frame) {
 		if f.fin {
 			close(stream.recvCh)
 			close(stream.remoteCloseCh)
-		}
-
-		if len(f.data) > 0 {
-			// TODO: should maybe be doing this in a goroutine
-			err := c.sendFrame(&frame{
-				frameType:      FrameTypeWindowIncrease,
-				streamId:       stream.id,
-				windowIncrease: uint32(len(f.data)),
-			})
-
-			if err != nil {
-				log.Println(err)
-			}
+			delete(c.streams, f.streamId)
 		}
 
 	case FrameTypeWindowIncrease:
-		c.mut.Lock()
-		stream, ok := c.streams[f.streamId]
-		c.mut.Unlock()
-		if !ok {
-			log.Println("FrameTypeWindowIncrease: no such stream")
-			return
+		if !streamExists {
+			log.Println("FrameTypeWindowIncrease: no such stream", f.streamId)
+		} else {
+			stream.updateWindow(f.windowIncrease)
 		}
-
-		stream.updateWindow(f.windowIncrease)
 	case FrameTypeReset:
 
 		log.Println("FrameTypeReset:", f.errorCode)
 
-		c.mut.Lock()
-		stream, ok := c.streams[f.streamId]
-		c.mut.Unlock()
-
-		if !ok {
+		if !streamExists {
 			log.Println("FrameTypeReset: no such stream", f.streamId)
-			return
+		} else {
+			delete(c.streams, f.streamId)
+			err := stream.Close()
+			if err != nil {
+				log.Println("FrameTypeReset:", err)
+			}
 		}
 
-		err := stream.Close()
-		if err != nil {
-			log.Println("FrameTypeReset:", err)
-		}
 	default:
 		log.Println("Frame type not implemented:", f.frameType)
 	}
@@ -214,7 +213,7 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 	sendCh := make(chan []byte)
 
-	stream := NewStream(streamId, sendCh)
+	stream := NewStream(streamId, sendCh, c.recvWindowUpdateCh)
 
 	readClosed := false
 	writeClosed := false
@@ -294,9 +293,7 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 		}
 	}()
 
-	c.mut.Lock()
 	c.streams[streamId] = stream
-	c.mut.Unlock()
 
 	if c.eventCh != nil {
 		c.eventCh <- &StreamCreatedEvent{}
