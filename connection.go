@@ -82,13 +82,23 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			c.handleFrame(frame)
 		}
 
-		// TODO: make thread safe
-		messageStream.Close()
+		mut.Lock()
+		defer mut.Unlock()
+
+		err := messageStream.Close()
+		if err != nil {
+			log.Println(err)
+		}
+		close(recvWindowUpdateCh)
 		close(c.eventCh)
 		c.eventCh = nil
 	}()
 
 	go func() {
+		if c.eventCh != nil {
+			c.eventCh <- DebugEvent(1)
+		}
+
 		for evt := range recvWindowUpdateCh {
 			err := c.sendFrame(&frame{
 				frameType:      FrameTypeWindowIncrease,
@@ -99,6 +109,10 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			if err != nil {
 				log.Println(err)
 			}
+		}
+
+		if c.eventCh != nil {
+			c.eventCh <- DebugEvent(-1)
 		}
 	}()
 
@@ -271,10 +285,6 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 	}()
 
 	go func() {
-		if c.eventCh != nil {
-			c.eventCh <- DebugEvent(1)
-		}
-
 		select {
 		case <-stream.remoteCloseCh:
 		case <-stream.closeReadCh:
@@ -287,10 +297,6 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 		readClosed = true
 		checkClosed()
-
-		if c.eventCh != nil {
-			c.eventCh <- DebugEvent(-1)
-		}
 	}()
 
 	c.streams[streamId] = stream
