@@ -95,9 +95,6 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 	}()
 
 	go func() {
-		if c.eventCh != nil {
-			c.eventCh <- DebugEvent(1)
-		}
 
 		for evt := range recvWindowUpdateCh {
 			err := c.sendFrame(&frame{
@@ -109,10 +106,6 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			if err != nil {
 				log.Println(err)
 			}
-		}
-
-		if c.eventCh != nil {
-			c.eventCh <- DebugEvent(-1)
 		}
 	}()
 
