@@ -14,7 +14,7 @@ const (
 	FrameTypeReset = iota
 	FrameTypeData
 	FrameTypeWindowIncrease
-	FrameTypeGoAway
+	FrameTypeGoAway // TODO: change to ConnectionClose (QUIC)
 	FrameTypeMessage
 )
 
