@@ -2,6 +2,7 @@ package omnistreams
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 )
@@ -82,6 +83,9 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			c.handleFrame(frame)
 		}
 
+		// TODO: Might need to clean up all streams here. Not sure if
+		// they'll be garbage collected.
+
 		mut.Lock()
 		defer mut.Unlock()
 
@@ -90,6 +94,9 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			log.Println(err)
 		}
 		close(recvWindowUpdateCh)
+
+		close(c.streamCh)
+
 		close(c.eventCh)
 		c.eventCh = nil
 	}()
@@ -128,7 +135,10 @@ func (c *Connection) SendMessage(msg []byte) error {
 }
 
 func (c *Connection) AcceptStream() (*Stream, error) {
-	strm := <-c.streamCh
+	strm, ok := <-c.streamCh
+	if !ok {
+		return nil, errors.New("Connection closed")
+	}
 	return strm, nil
 }
 
@@ -180,6 +190,8 @@ func (c *Connection) handleFrame(f *frame) {
 
 			stream = c.newStream(f.streamId, false)
 
+			//Dash.Set("stream-queue-len", 1)
+
 			c.streamCh <- stream
 		}
 
@@ -210,6 +222,13 @@ func (c *Connection) handleFrame(f *frame) {
 				log.Println("FrameTypeReset:", err)
 			}
 		}
+	case FrameTypeGoAway:
+
+		log.Println("FrameTypeGoAway:", f.errorCode)
+
+		close(c.streamCh)
+
+		// TODO: clean up all streams
 
 	default:
 		log.Println("Frame type not implemented:", f.frameType)
