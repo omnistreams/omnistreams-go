@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"sync"
 	"sync/atomic"
 )
 
@@ -20,6 +21,7 @@ type Stream struct {
 	readClosed     atomic.Bool
 	writeClosed    atomic.Bool
 	recvWindowCh   chan windowUpdateEvent
+	mu             *sync.Mutex
 }
 
 type windowUpdateEvent struct {
@@ -42,6 +44,7 @@ func NewStream(streamId uint32, sendCh chan []byte, recvWindowCh chan windowUpda
 		closeWriteCh:   make(chan struct{}),
 		remoteCloseCh:  make(chan struct{}),
 		recvWindowCh:   recvWindowCh,
+		mu:             &sync.Mutex{},
 	}
 
 	return stream
@@ -186,14 +189,20 @@ func (s *Stream) Write(p []byte) (int, error) {
 	msgLen := uint32(len(buf))
 
 	for {
-		if s.sendWindow >= msgLen {
+		// TODO: try to redesign without so much mutex
+		s.mu.Lock()
+		sendWindow := s.sendWindow
+		s.mu.Unlock()
+		if sendWindow >= msgLen {
+                        // TODO: I think this should be in a select
 			s.sendCh <- buf
+			s.mu.Lock()
 			s.sendWindow -= msgLen
+			s.mu.Unlock()
 			break
 		} else {
 			select {
-			case windowIncrease := <-s.windowUpdateCh:
-				s.sendWindow += windowIncrease
+			case <-s.windowUpdateCh:
 			case _, ok := <-s.closeWriteCh:
 				if !ok {
 					log.Println("write closed, returning error")
@@ -207,5 +216,12 @@ func (s *Stream) Write(p []byte) (int, error) {
 }
 
 func (s *Stream) updateWindow(windowUpdate uint32) {
-	s.windowUpdateCh <- windowUpdate
+	s.mu.Lock()
+	s.sendWindow += windowUpdate
+	s.mu.Unlock()
+
+	select {
+	case s.windowUpdateCh <- windowUpdate:
+	default:
+	}
 }
