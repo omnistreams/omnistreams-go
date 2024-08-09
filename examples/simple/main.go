@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/anderspitman/omnistreams-go"
+	"github.com/omnistreams/omnistreams-go"
 )
 
 func main() {
