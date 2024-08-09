@@ -97,7 +97,9 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 
 		close(c.streamCh)
 
-		close(c.eventCh)
+		if c.eventCh != nil {
+			close(c.eventCh)
+		}
 		c.eventCh = nil
 	}()
 

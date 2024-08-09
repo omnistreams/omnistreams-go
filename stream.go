@@ -194,7 +194,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 		sendWindow := s.sendWindow
 		s.mu.Unlock()
 		if sendWindow >= msgLen {
-                        // TODO: I think this should be in a select
+			// TODO: I think this should be in a select
 			s.sendCh <- buf
 			s.mu.Lock()
 			s.sendWindow -= msgLen
