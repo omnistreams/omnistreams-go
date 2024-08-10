@@ -56,6 +56,8 @@ func main() {
                         return
                 }
 
+                wsConn.SetReadLimit(128 * 1024)
+
                 wr := NewWsConnWrapper(wsConn)
 
                 conn := omnistreams.NewConnection(wr, false)
