@@ -1,21 +1,21 @@
 package main
 
 import (
-        "io"
-        "io/ioutil"
-        "context"
-        "errors"
-        "fmt"
-        "net/http"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"net/http"
 
-        "github.com/coder/websocket"
-        "github.com/omnistreams/omnistreams-go"
+	"github.com/coder/websocket"
+	"github.com/omnistreams/omnistreams-go"
 )
 
 const (
-        TestTypeConsume = iota
-        TestTypeEcho
-        TestTypeMimic
+	TestTypeConsume = iota
+	TestTypeEcho
+	TestTypeMimic
 )
 
 type wsConnWrapper struct {
@@ -47,82 +47,82 @@ func (wr *wsConnWrapper) Write(ctx context.Context, msg []byte) error {
 }
 
 func main() {
-        http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-                wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-                        OriginPatterns: []string{"*"},
-                })
-                if err != nil {
-                        fmt.Println(err)
-                        return
-                }
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+			OriginPatterns: []string{"*"},
+		})
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 
-                wsConn.SetReadLimit(128 * 1024)
+		wsConn.SetReadLimit(128 * 1024)
 
-                wr := NewWsConnWrapper(wsConn)
+		wr := NewWsConnWrapper(wsConn)
 
-                conn := omnistreams.NewConnection(wr, false)
+		conn := omnistreams.NewConnection(wr, false)
 
-                //stream, err := conn.OpenStream()
-                //if err != nil {
-                //        fmt.Println(err)
-                //}
+		//stream, err := conn.OpenStream()
+		//if err != nil {
+		//        fmt.Println(err)
+		//}
 
-                //fmt.Println(stream)
-                //stream.Write([]byte("Hi there"))
+		//fmt.Println(stream)
+		//stream.Write([]byte("Hi there"))
 
-                for {
-                        stream, err := conn.AcceptStream()
-                        if err != nil {
-                                fmt.Println(err)
-                                break
-                        }
+		for {
+			stream, err := conn.AcceptStream()
+			if err != nil {
+				fmt.Println(err)
+				break
+			}
 
-                        go handleStream(conn, stream)
-                }
-        })
+			go handleStream(conn, stream)
+		}
+	})
 
-        fmt.Println("Running")
-        err := http.ListenAndServe(":3000", nil)
-        fmt.Println(err)
+	fmt.Println("Running")
+	err := http.ListenAndServe(":3000", nil)
+	fmt.Println(err)
 }
 
 func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
 
-        testTypeByte := []byte{0}
+	testTypeByte := []byte{0}
 
-        _, err := stream.Read(testTypeByte)
-        if err != nil {
-                fmt.Println(err)
-        }
+	_, err := stream.Read(testTypeByte)
+	if err != nil {
+		fmt.Println(err)
+	}
 
-        switch testTypeByte[0] {
-        case TestTypeConsume:
-                fmt.Println("TestTypeConsume")
-                n, err := io.Copy(ioutil.Discard, stream)
-                if err != nil {
-                        fmt.Println(err)
-                }
-                fmt.Println("Consumed", n)
-        case TestTypeEcho:
-                fmt.Println("TestTypeEcho")
-                n, err := io.Copy(stream, stream)
-                if err != nil {
-                        fmt.Println(err)
-                }
-                fmt.Println("Echoed", n)
-        case TestTypeMimic:
-                fmt.Println("TestTypeMimic")
-                resStream, err := conn.OpenStream()
-                if err != nil {
-                        fmt.Println(err)
-                }
+	switch testTypeByte[0] {
+	case TestTypeConsume:
+		fmt.Println("TestTypeConsume")
+		n, err := io.Copy(ioutil.Discard, stream)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println("Consumed", n)
+	case TestTypeEcho:
+		fmt.Println("TestTypeEcho")
+		n, err := io.Copy(stream, stream)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println("Echoed", n)
+	case TestTypeMimic:
+		fmt.Println("TestTypeMimic")
+		resStream, err := conn.OpenStream()
+		if err != nil {
+			fmt.Println(err)
+		}
 
-                n, err := io.Copy(resStream, stream)
-                if err != nil {
-                        fmt.Println(err)
-                }
-                fmt.Println("Mimic'd", n)
-        default:
-                fmt.Println("Unknown test type", testTypeByte[0])
-        }
+		n, err := io.Copy(resStream, stream)
+		if err != nil {
+			fmt.Println(err)
+		}
+		fmt.Println("Mimic'd", n)
+	default:
+		fmt.Println("Unknown test type", testTypeByte[0])
+	}
 }
