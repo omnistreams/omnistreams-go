@@ -202,6 +202,7 @@ func (c *Connection) handleFrame(f *frame) {
 		if f.fin {
 			close(stream.recvCh)
 			close(stream.remoteCloseCh)
+                        // TODO: I don't think we should be deleting unless both read/write are done
 			delete(c.streams, f.streamId)
 		}
 
