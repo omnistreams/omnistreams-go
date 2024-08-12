@@ -50,31 +50,39 @@ func (f frame) String() string {
 	s += fmt.Sprintf("  streamId: %d\n", +f.streamId)
 	s += fmt.Sprintf("  syn: %t\n", f.syn)
 	s += fmt.Sprintf("  fin: %t\n", f.fin)
-	s += fmt.Sprintf("  len(data): %d\n", len(f.data))
 
-	s += "  data[0:16]: [ "
-	for i := 0; i < 16; i++ {
-		if i >= len(f.data) {
-			break
+	if f.data != nil {
+		s += fmt.Sprintf("  len(data): %d\n", len(f.data))
+
+		s += "  data[0:16]: [ "
+		for i := 0; i < 16; i++ {
+			if i >= len(f.data) {
+				break
+			}
+
+			s += fmt.Sprintf("%d ", f.data[i])
 		}
+		s += "]\n"
 
-		s += fmt.Sprintf("%d ", f.data[i])
+		str := strconv.Quote(string(f.data))
+		s += "  string(data): "
+		beg := ""
+		end := ""
+		for i := 0; i < len(str); i++ {
+			if i < 32 {
+				beg += string(str[i])
+			}
+			if i > len(str)-32 {
+				end += string(str[i])
+			}
+		}
+		s += fmt.Sprintf("%s...%s\n", beg, end)
 	}
-	s += "]\n"
 
-	str := strconv.Quote(string(f.data))
-	s += "  string(data): "
-	beg := ""
-	end := ""
-	for i := 0; i < len(str); i++ {
-		if i < 32 {
-			beg += string(str[i])
-		}
-		if i > len(str)-32 {
-			end += string(str[i])
-		}
+	switch f.frameType {
+	case FrameTypeWindowIncrease:
+		s += fmt.Sprintf("  windowIncrease: %d\n", f.windowIncrease)
 	}
-	s += fmt.Sprintf("%s...%s\n", beg, end)
 
 	s += "}"
 
