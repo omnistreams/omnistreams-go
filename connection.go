@@ -3,6 +3,7 @@ package omnistreams
 import (
 	"context"
 	"errors"
+	//"fmt"
 	"log"
 	"sync"
 )
@@ -158,8 +159,10 @@ func (c *Connection) OpenStream() (*Stream, error) {
 }
 
 func (c *Connection) sendFrame(frame *frame) error {
+	//c.mut.Lock()
 	//fmt.Println("Send frame")
 	//fmt.Println(frame)
+	//c.mut.Unlock()
 
 	packedFrame := packFrame(frame)
 	err := c.chunkStream.Write(context.Background(), packedFrame)
@@ -172,8 +175,10 @@ func (c *Connection) sendFrame(frame *frame) error {
 
 func (c *Connection) handleFrame(f *frame) {
 
+	//c.mut.Lock()
 	//fmt.Println("Receive frame")
 	//fmt.Printf("%+v\n", f)
+	//c.mut.Unlock()
 
 	stream, streamExists := c.streams[f.streamId]
 
@@ -202,7 +207,9 @@ func (c *Connection) handleFrame(f *frame) {
 		if f.fin {
 			close(stream.recvCh)
 			close(stream.remoteCloseCh)
-			delete(c.streams, f.streamId)
+			// TODO: make sure streams aren't leaking. Removed this because it was preventing
+			// window increases from being received on half-closed streams
+			//delete(c.streams, f.streamId)
 		}
 
 	case FrameTypeWindowIncrease:
