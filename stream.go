@@ -96,6 +96,8 @@ func (s *Stream) CloseWrite() error {
 	return nil
 }
 
+// TODO: ReadMessage currently doesn't account for any data that might be left
+// in the receive buffer from previous calls to Read()
 func (s *Stream) ReadMessage() ([]byte, error) {
 	select {
 	case msg, ok := <-s.recvCh:
