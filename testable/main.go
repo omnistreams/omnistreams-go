@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"net"
 	"net/http"
+	"os"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/coder/websocket"
 	"github.com/omnistreams/omnistreams-go"
 )
@@ -47,6 +51,27 @@ func (wr *wsConnWrapper) Write(ctx context.Context, msg []byte) error {
 }
 
 func main() {
+
+	certmagic.DefaultACME.DisableHTTPChallenge = true
+	certmagic.DefaultACME.Agreed = true
+	//certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+
+	certConfig := certmagic.NewDefault()
+
+	ctx := context.Background()
+	err := certConfig.ManageSync(ctx, []string{"os.anderspitman.com"})
+	exitOnError(err)
+
+	tlsConfig := &tls.Config{
+		GetCertificate: certConfig.GetCertificate,
+		//NextProtos: []string{"http/1.1", "acme-tls/1"},
+	}
+
+	listener, err := net.Listen("tcp", ":443")
+	exitOnError(err)
+
+	tlsListener := tls.NewListener(listener, tlsConfig)
+
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 			OriginPatterns: []string{"*"},
@@ -82,8 +107,8 @@ func main() {
 	})
 
 	fmt.Println("Running")
-	err := http.ListenAndServe(":3000", nil)
-	fmt.Println(err)
+	err = http.Serve(tlsListener, nil)
+	exitOnError(err)
 }
 
 func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
@@ -132,5 +157,12 @@ func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
 		fmt.Println("Mimic'd", n)
 	default:
 		fmt.Println("Unknown test type", testTypeByte[0])
+	}
+}
+
+func exitOnError(err error) {
+	if err != nil {
+		fmt.Fprintf(os.Stderr, err.Error())
+		os.Exit(1)
 	}
 }
