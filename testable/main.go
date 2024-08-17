@@ -12,8 +12,11 @@ import (
 	"os"
 
 	"github.com/caddyserver/certmagic"
+	//"github.com/quic-go/quic-go"
 	"github.com/coder/websocket"
 	"github.com/omnistreams/omnistreams-go"
+	"github.com/quic-go/quic-go/http3"
+	"github.com/quic-go/webtransport-go"
 )
 
 const (
@@ -21,6 +24,16 @@ const (
 	TestTypeEcho
 	TestTypeMimic
 )
+
+type road interface {
+	Read(p []byte) (int, error)
+	Write(p []byte) (int, error)
+}
+
+type session interface {
+	OpenRoad() (road, error)
+	AcceptRoad() (road, error)
+}
 
 type wsConnWrapper struct {
 	wsConn *websocket.Conn
@@ -50,6 +63,29 @@ func (wr *wsConnWrapper) Write(ctx context.Context, msg []byte) error {
 	return wr.wsConn.Write(ctx, websocket.MessageBinary, msg)
 }
 
+type wtSessionWrapper struct {
+	wtSession *webtransport.Session
+}
+
+func (s *wtSessionWrapper) OpenRoad() (road, error) {
+	return s.wtSession.OpenStream()
+}
+func (s *wtSessionWrapper) AcceptRoad() (road, error) {
+	ctx := context.Background()
+	return s.wtSession.AcceptStream(ctx)
+}
+
+type osConnWrapper struct {
+	osConn *omnistreams.Connection
+}
+
+func (c *osConnWrapper) OpenRoad() (road, error) {
+	return c.osConn.OpenStream()
+}
+func (c *osConnWrapper) AcceptRoad() (road, error) {
+	return c.osConn.AcceptStream()
+}
+
 func main() {
 
 	certmagic.DefaultACME.DisableHTTPChallenge = true
@@ -72,38 +108,82 @@ func main() {
 
 	tlsListener := tls.NewListener(listener, tlsConfig)
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-			OriginPatterns: []string{"*"},
-		})
-		if err != nil {
-			fmt.Println(err)
-			return
+	mux := http.NewServeMux()
+
+	wtServer := webtransport.Server{
+		H3: http3.Server{
+			Addr:      ":5757",
+			Handler:   mux,
+			TLSConfig: tlsConfig,
+			//QuicConfig: &quic.Config{
+			//	//MaxIncomingStreams: 512,
+			//	KeepAlivePeriod: 8,
+			//},
+		},
+		CheckOrigin: func(r *http.Request) bool {
+			return true
+		},
+	}
+
+	go wtServer.ListenAndServe()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+
+		var sess session
+
+		if r.ProtoMajor == 3 {
+			wtSession, err := wtServer.Upgrade(w, r)
+			if err != nil {
+				w.WriteHeader(500)
+				fmt.Println(err)
+				return
+			}
+
+			wtSess := &wtSessionWrapper{
+				wtSession,
+			}
+
+			sess = wtSess
+
+		} else {
+			wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+				OriginPatterns: []string{"*"},
+			})
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+			wsConn.SetReadLimit(128 * 1024)
+
+			wr := NewWsConnWrapper(wsConn)
+
+			osConn := omnistreams.NewConnection(wr, false)
+
+			osSess := &osConnWrapper{
+				osConn,
+			}
+
+			sess = osSess
 		}
 
-		wsConn.SetReadLimit(128 * 1024)
-
-		wr := NewWsConnWrapper(wsConn)
-
-		conn := omnistreams.NewConnection(wr, false)
-
 		for {
-			stream, err := conn.AcceptStream()
+			stream, err := sess.AcceptRoad()
 			if err != nil {
 				fmt.Println(err)
 				break
 			}
 
-			go handleStream(conn, stream)
+			go handleStream(sess, stream)
 		}
 	})
 
 	fmt.Println("Running")
-	err = http.Serve(tlsListener, nil)
+	err = http.Serve(tlsListener, mux)
 	exitOnError(err)
 }
 
-func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
+func handleStream(conn session, stream road) {
 
 	testTypeByte := []byte{0}
 
@@ -133,7 +213,7 @@ func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
 		fmt.Println("Echoed", n)
 	case TestTypeMimic:
 		fmt.Println("TestTypeMimic")
-		resStream, err := conn.OpenStream()
+		resStream, err := conn.OpenRoad()
 		if err != nil {
 			fmt.Println(err)
 		}
