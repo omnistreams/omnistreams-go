@@ -87,14 +87,6 @@ func main() {
 
 		conn := omnistreams.NewConnection(wr, false)
 
-		//stream, err := conn.OpenStream()
-		//if err != nil {
-		//        fmt.Println(err)
-		//}
-
-		//fmt.Println(stream)
-		//stream.Write([]byte("Hi there"))
-
 		for {
 			stream, err := conn.AcceptStream()
 			if err != nil {
