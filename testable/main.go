@@ -105,6 +105,10 @@ func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
 		fmt.Println("Consumed", n)
 	case TestTypeEcho:
 		fmt.Println("TestTypeEcho")
+		_, err = stream.Write(testTypeByte)
+		if err != nil {
+			fmt.Println(err)
+		}
 		n, err := io.Copy(stream, stream)
 		if err != nil {
 			fmt.Println(err)
@@ -117,6 +121,10 @@ func handleStream(conn *omnistreams.Connection, stream *omnistreams.Stream) {
 			fmt.Println(err)
 		}
 
+		_, err = resStream.Write(testTypeByte)
+		if err != nil {
+			fmt.Println(err)
+		}
 		n, err := io.Copy(resStream, stream)
 		if err != nil {
 			fmt.Println(err)
