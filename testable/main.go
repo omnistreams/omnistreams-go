@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"errors"
 	"flag"
 	"fmt"
@@ -24,7 +25,12 @@ const (
 	TestTypeConsume = iota
 	TestTypeEcho
 	TestTypeMimic
+	TestTypeSend
 )
+
+const TestTypeSize = 1
+const TestIdSize = 4
+const TestHeaderSize = TestTypeSize + TestIdSize
 
 type road interface {
 	Read(p []byte) (int, error)
@@ -206,14 +212,16 @@ func main() {
 
 func handleStream(conn session, stream road) {
 
-	testTypeByte := []byte{0}
+	buf := make([]byte, 4096)
 
-	_, err := stream.Read(testTypeByte)
+	n, err := stream.Read(buf)
 	if err != nil {
 		fmt.Println(err)
 	}
 
-	switch testTypeByte[0] {
+	testTypeByte := buf[0]
+
+	switch testTypeByte {
 	case TestTypeConsume:
 		fmt.Println("TestTypeConsume")
 		n, err := io.Copy(ioutil.Discard, stream)
@@ -223,7 +231,7 @@ func handleStream(conn session, stream road) {
 		fmt.Println("Consumed", n)
 	case TestTypeEcho:
 		fmt.Println("TestTypeEcho")
-		_, err = stream.Write(testTypeByte)
+		_, err = stream.Write(buf[:n])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -239,7 +247,7 @@ func handleStream(conn session, stream road) {
 			fmt.Println(err)
 		}
 
-		_, err = resStream.Write(testTypeByte)
+		_, err = resStream.Write(buf[:n])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -248,8 +256,35 @@ func handleStream(conn session, stream road) {
 			fmt.Println(err)
 		}
 		fmt.Println("Mimic'd", n)
+	case TestTypeSend:
+
+		size := binary.BigEndian.Uint32(buf[TestHeaderSize:])
+
+		var chunkSize uint32 = 256 * 1024
+
+		if size < chunkSize {
+			chunk := make([]byte, size)
+
+			_, err = stream.Write(chunk)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+
+		} else {
+			chunk := make([]byte, chunkSize)
+
+			var i uint32
+			for i = 0; i < size; i += chunkSize {
+				_, err = stream.Write(chunk)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+			}
+		}
 	default:
-		fmt.Println("Unknown test type", testTypeByte[0])
+		fmt.Println("Unknown test type", testTypeByte)
 	}
 }
 
