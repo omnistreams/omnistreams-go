@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -88,50 +89,70 @@ func (c *osConnWrapper) AcceptRoad() (road, error) {
 
 func main() {
 
-	certmagic.DefaultACME.DisableHTTPChallenge = true
-	certmagic.DefaultACME.Agreed = true
-	//certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+	useTlsArg := flag.Bool("use-tls", false, "Use TLS")
+	flag.Parse()
 
-	certConfig := certmagic.NewDefault()
-
-	ctx := context.Background()
-	err := certConfig.ManageSync(ctx, []string{"os.anderspitman.com"})
-	exitOnError(err)
-
-	tlsConfig := &tls.Config{
-		GetCertificate: certConfig.GetCertificate,
-		//NextProtos: []string{"http/1.1", "acme-tls/1"},
-	}
-
-	listener, err := net.Listen("tcp", ":443")
-	exitOnError(err)
-
-	tlsListener := tls.NewListener(listener, tlsConfig)
+	useTls := *useTlsArg
 
 	mux := http.NewServeMux()
+	var wtServer *webtransport.Server
 
-	wtServer := webtransport.Server{
-		H3: http3.Server{
-			Addr:      ":5757",
-			Handler:   mux,
-			TLSConfig: tlsConfig,
-			//QuicConfig: &quic.Config{
-			//	//MaxIncomingStreams: 512,
-			//	KeepAlivePeriod: 8,
-			//},
-		},
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
+	var listener net.Listener
+	var err error
+	if useTls {
+		listener, err = net.Listen("tcp", ":443")
+		exitOnError(err)
+	} else {
+		listener, err = net.Listen("tcp", ":3000")
+		exitOnError(err)
 	}
 
-	go wtServer.ListenAndServe()
+	if useTls {
+		certmagic.DefaultACME.DisableHTTPChallenge = true
+		certmagic.DefaultACME.Agreed = true
+		//certmagic.DefaultACME.CA = certmagic.LetsEncryptStagingCA
+
+		certConfig := certmagic.NewDefault()
+
+		ctx := context.Background()
+		err := certConfig.ManageSync(ctx, []string{"os.anderspitman.com"})
+		exitOnError(err)
+
+		tlsConfig := &tls.Config{
+			GetCertificate: certConfig.GetCertificate,
+			//NextProtos: []string{"http/1.1", "acme-tls/1"},
+		}
+
+		listener = tls.NewListener(listener, tlsConfig)
+
+		wtServer = &webtransport.Server{
+			H3: http3.Server{
+				Addr:      ":5757",
+				Handler:   mux,
+				TLSConfig: tlsConfig,
+				//QuicConfig: &quic.Config{
+				//	//MaxIncomingStreams: 512,
+				//	KeepAlivePeriod: 8,
+				//},
+			},
+			CheckOrigin: func(r *http.Request) bool {
+				return true
+			},
+		}
+
+		go wtServer.ListenAndServe()
+	}
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 
 		var sess session
 
 		if r.ProtoMajor == 3 {
+			if wtServer == nil {
+				fmt.Println("HTTP/3 not supported")
+				return
+			}
+
 			wtSession, err := wtServer.Upgrade(w, r)
 			if err != nil {
 				w.WriteHeader(500)
@@ -179,7 +200,7 @@ func main() {
 	})
 
 	fmt.Println("Running")
-	err = http.Serve(tlsListener, mux)
+	err = http.Serve(listener, mux)
 	exitOnError(err)
 }
 
