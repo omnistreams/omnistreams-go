@@ -5,11 +5,12 @@ import (
 	"io"
 	"log"
 	"sync"
-	"sync/atomic"
 )
 
-const DefaultWindowSize = 256*1024
-//const DefaultWindowSize = 512*1024
+const DefaultWindowSize = 256 * 1024
+//const DefaultWindowSize = 512 * 1024
+//const DefaultWindowSize = 1 * 1024 * 1024
+//const DefaultWindowSize = 6 * 1024 * 1024
 
 type Stream struct {
 	id             uint32
@@ -21,8 +22,8 @@ type Stream struct {
 	closeReadCh    chan struct{}
 	closeWriteCh   chan struct{}
 	remoteCloseCh  chan struct{}
-	readClosed     atomic.Bool
-	writeClosed    atomic.Bool
+	readClosed     bool
+	writeClosed    bool
 	recvWindowCh   chan windowUpdateEvent
 	mu             *sync.Mutex
 }
@@ -66,8 +67,11 @@ func (s *Stream) Close() error {
 }
 
 func (s *Stream) CloseRead() error {
-	if !s.readClosed.Load() {
-		s.readClosed.Store(true)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.readClosed {
+		s.readClosed = true
 		close(s.closeReadCh)
 
 		// Need to flush this stream because otherwise the OS buffers can
@@ -92,8 +96,11 @@ func (s *Stream) CloseRead() error {
 }
 
 func (s *Stream) CloseWrite() error {
-	if !s.writeClosed.Load() {
-		s.writeClosed.Store(true)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if !s.writeClosed {
+		s.writeClosed = true
 		close(s.closeWriteCh)
 	}
 	return nil
