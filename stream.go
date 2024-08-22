@@ -8,6 +8,7 @@ import (
 )
 
 const DefaultWindowSize = 256 * 1024
+
 //const DefaultWindowSize = 512 * 1024
 //const DefaultWindowSize = 1 * 1024 * 1024
 //const DefaultWindowSize = 6 * 1024 * 1024

@@ -87,6 +87,7 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 		// TODO: Might need to clean up all streams here. Not sure if
 		// they'll be garbage collected.
 
+		// TODO: not sure why this lock is here. Seems dangerous
 		mut.Lock()
 		defer mut.Unlock()
 
@@ -148,12 +149,11 @@ func (c *Connection) AcceptStream() (*Stream, error) {
 func (c *Connection) OpenStream() (*Stream, error) {
 
 	c.mut.Lock()
-
 	streamId := c.nextStreamId
 	c.nextStreamId += 2
-	stream := c.newStream(streamId, true)
-
 	c.mut.Unlock()
+
+	stream := c.newStream(streamId, true)
 
 	return stream, nil
 }
@@ -180,7 +180,9 @@ func (c *Connection) handleFrame(f *frame) {
 	//fmt.Printf("%+v\n", f)
 	//c.mut.Unlock()
 
+	c.mut.Lock()
 	stream, streamExists := c.streams[f.streamId]
+	c.mut.Unlock()
 
 	switch f.frameType {
 	case FrameTypeMessage:
@@ -225,7 +227,10 @@ func (c *Connection) handleFrame(f *frame) {
 		if !streamExists {
 			log.Println("FrameTypeReset: no such stream", f.streamId)
 		} else {
+			c.mut.Lock()
 			delete(c.streams, f.streamId)
+			c.mut.Unlock()
+
 			err := stream.Close()
 			if err != nil {
 				log.Println("FrameTypeReset:", err)
@@ -320,7 +325,9 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 		checkClosed()
 	}()
 
+	c.mut.Lock()
 	c.streams[streamId] = stream
+	c.mut.Unlock()
 
 	if c.eventCh != nil {
 		c.eventCh <- &StreamCreatedEvent{}
