@@ -8,6 +8,9 @@ import (
 	"sync/atomic"
 )
 
+const DefaultWindowSize = 256*1024
+//const DefaultWindowSize = 512*1024
+
 type Stream struct {
 	id             uint32
 	recvCh         chan []byte
@@ -39,7 +42,7 @@ func NewStream(streamId uint32, sendCh chan []byte, recvWindowCh chan windowUpda
 		recvCh:         make(chan []byte, 10),
 		sendCh:         sendCh,
 		windowUpdateCh: make(chan uint32, 1),
-		sendWindow:     256 * 1024,
+		sendWindow:     DefaultWindowSize,
 		closeReadCh:    make(chan struct{}),
 		closeWriteCh:   make(chan struct{}),
 		remoteCloseCh:  make(chan struct{}),
