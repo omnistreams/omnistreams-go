@@ -3,25 +3,24 @@ package omnistreams
 import (
 	"context"
 	"errors"
-	//"fmt"
 	"log"
 	"sync"
 )
 
-type ChunkStream interface {
+type Transport interface {
 	Read(context.Context) ([]byte, error)
 	Write(context.Context, []byte) error
 }
 
 type Connection struct {
-	nextStreamId       uint32
-	streams            map[uint32]*Stream
-	streamCh           chan *Stream
-	mut                *sync.Mutex
-	chunkStream        ChunkStream
-	messageStream      *Stream
+	nextStreamId uint32
+	streams      map[uint32]*Stream
+	streamCh     chan *Stream
+	mut          *sync.Mutex
+	transport    Transport
 	recvWindowUpdateCh chan windowUpdateEvent
 	eventCh            chan Event
+	wg                 *sync.WaitGroup
 }
 
 type Event interface{}
@@ -29,7 +28,7 @@ type StreamCreatedEvent struct{}
 type StreamDeletedEvent struct{}
 type DebugEvent int
 
-func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
+func NewConnection(transport Transport, isClient bool) *Connection {
 
 	streams := make(map[uint32]*Stream)
 	mut := &sync.Mutex{}
@@ -49,24 +48,19 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 		streams:            streams,
 		streamCh:           streamCh,
 		mut:                mut,
-		chunkStream:        chunkStream,
+		transport:          transport,
 		recvWindowUpdateCh: recvWindowUpdateCh,
+		wg:                 &sync.WaitGroup{},
 	}
-
-	messageStream := c.newStream(0, false)
-
-	c.messageStream = messageStream
-
-	streams[0] = messageStream
 
 	go func() {
 
 		ctx := context.Background()
 
 		for {
-			msgBytes, err := chunkStream.Read(ctx)
+			msgBytes, err := transport.Read(ctx)
 			if err != nil {
-				log.Println("Error chunkStream.Read", err)
+				log.Println("Error transport.Read", err)
 				break
 			}
 
@@ -84,18 +78,16 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			c.handleFrame(frame)
 		}
 
-		// TODO: Might need to clean up all streams here. Not sure if
-		// they'll be garbage collected.
-
 		// TODO: not sure why this lock is here. Seems dangerous
 		mut.Lock()
 		defer mut.Unlock()
 
-		err := messageStream.Close()
-		if err != nil {
-			log.Println(err)
+		for _, stream := range c.streams {
+			err := stream.Close()
+			if err != nil {
+				log.Println(err)
+			}
 		}
-		close(recvWindowUpdateCh)
 
 		close(c.streamCh)
 
@@ -103,6 +95,12 @@ func NewConnection(chunkStream ChunkStream, isClient bool) *Connection {
 			close(c.eventCh)
 		}
 		c.eventCh = nil
+
+		go func() {
+			// Wait until all streams are done to close this channel
+			c.wg.Wait()
+			close(recvWindowUpdateCh)
+		}()
 	}()
 
 	go func() {
@@ -127,15 +125,6 @@ func (c *Connection) Events() chan Event {
 	eventCh := make(chan Event, 1)
 	c.eventCh = eventCh
 	return eventCh
-}
-
-func (c *Connection) ReceiveMessage() ([]byte, error) {
-	return c.messageStream.ReadMessage()
-}
-
-func (c *Connection) SendMessage(msg []byte) error {
-	_, err := c.messageStream.Write(msg)
-	return err
 }
 
 func (c *Connection) AcceptStream() (*Stream, error) {
@@ -165,7 +154,7 @@ func (c *Connection) sendFrame(frame *frame) error {
 	//c.mut.Unlock()
 
 	packedFrame := packFrame(frame)
-	err := c.chunkStream.Write(context.Background(), packedFrame)
+	err := c.transport.Write(context.Background(), packedFrame)
 	if err != nil {
 		return err
 	}
@@ -227,9 +216,10 @@ func (c *Connection) handleFrame(f *frame) {
 		if !streamExists {
 			log.Println("FrameTypeReset: no such stream", f.streamId)
 		} else {
-			c.mut.Lock()
-			delete(c.streams, f.streamId)
-			c.mut.Unlock()
+			// TODO: this might be leaking now
+			//c.mut.Lock()
+			//delete(c.streams, f.streamId)
+			//c.mut.Unlock()
 
 			err := stream.Close()
 			if err != nil {
@@ -251,6 +241,8 @@ func (c *Connection) handleFrame(f *frame) {
 
 func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
+	c.wg.Add(1)
+
 	sendCh := make(chan []byte)
 
 	stream := NewStream(streamId, sendCh, c.recvWindowUpdateCh)
@@ -262,6 +254,8 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 			c.mut.Lock()
 			delete(c.streams, streamId)
 			c.mut.Unlock()
+
+			c.wg.Done()
 
 			if c.eventCh != nil {
 				c.eventCh <- &StreamDeletedEvent{}
@@ -292,15 +286,19 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 				err := c.sendFrame(frm)
 				if err != nil {
-					log.Println("TODO:", err)
+					log.Println("<-sendCh:", err)
+					break LOOP
 				}
 			case <-stream.closeWriteCh:
-				c.sendFrame(&frame{
+				err := c.sendFrame(&frame{
 					frameType: FrameTypeData,
 					streamId:  streamId,
 					syn:       false,
 					fin:       true,
 				})
+				if err != nil {
+					log.Println("<-stream.closeWriteCh:", err)
+				}
 
 				writeClosed = true
 				checkClosed()
@@ -314,11 +312,14 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 		select {
 		case <-stream.remoteCloseCh:
 		case <-stream.closeReadCh:
-			c.sendFrame(&frame{
+			err := c.sendFrame(&frame{
 				frameType: FrameTypeReset,
 				streamId:  streamId,
 				errorCode: 42,
 			})
+			if err != nil {
+				log.Println("<-stream.closeReadCh:", err)
+			}
 		}
 
 		readClosed = true

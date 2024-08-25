@@ -3,7 +3,6 @@ package omnistreams
 import (
 	"errors"
 	"io"
-	"log"
 	"sync"
 )
 
@@ -14,19 +13,19 @@ const DefaultWindowSize = 256 * 1024
 //const DefaultWindowSize = 6 * 1024 * 1024
 
 type Stream struct {
-	id             uint32
-	recvCh         chan []byte
-	sendCh         chan []byte
-	sendWindow     uint32
-	windowUpdateCh chan uint32
-	recvBuf        []byte
-	closeReadCh    chan struct{}
-	closeWriteCh   chan struct{}
-	remoteCloseCh  chan struct{}
-	readClosed     bool
-	writeClosed    bool
-	recvWindowCh   chan windowUpdateEvent
-	mu             *sync.Mutex
+	id                 uint32
+	recvCh             chan []byte
+	sendCh             chan []byte
+	sendWindow         uint32
+	windowUpdateCh     chan uint32
+	recvBuf            []byte
+	closeReadCh        chan struct{}
+	closeWriteCh       chan struct{}
+	remoteCloseCh      chan struct{}
+	readClosed         bool
+	writeClosed        bool
+	recvWindowUpdateCh chan windowUpdateEvent
+	mu                 *sync.Mutex
 }
 
 type windowUpdateEvent struct {
@@ -34,22 +33,22 @@ type windowUpdateEvent struct {
 	windowUpdate uint32
 }
 
-func NewStream(streamId uint32, sendCh chan []byte, recvWindowCh chan windowUpdateEvent) *Stream {
+func NewStream(streamId uint32, sendCh chan []byte, recvWindowUpdateCh chan windowUpdateEvent) *Stream {
 
 	stream := &Stream{
 		id: streamId,
 		// TODO: using a channel as a buffer here is pretty hacky. Instead we should never block sends
 		// to recvCh and check against the receive window. If there's too much data coming in we
 		// need to reset the connection because that means the sender is exceeding the window.
-		recvCh:         make(chan []byte, 10),
-		sendCh:         sendCh,
-		windowUpdateCh: make(chan uint32, 1),
-		sendWindow:     DefaultWindowSize,
-		closeReadCh:    make(chan struct{}),
-		closeWriteCh:   make(chan struct{}),
-		remoteCloseCh:  make(chan struct{}),
-		recvWindowCh:   recvWindowCh,
-		mu:             &sync.Mutex{},
+		recvCh:             make(chan []byte, 10),
+		sendCh:             sendCh,
+		windowUpdateCh:     make(chan uint32, 1),
+		sendWindow:         DefaultWindowSize,
+		closeReadCh:        make(chan struct{}),
+		closeWriteCh:       make(chan struct{}),
+		remoteCloseCh:      make(chan struct{}),
+		recvWindowUpdateCh: recvWindowUpdateCh,
+		mu:                 &sync.Mutex{},
 	}
 
 	return stream
@@ -118,8 +117,7 @@ func (s *Stream) ReadMessage() ([]byte, error) {
 		return msg, nil
 	case _, ok := <-s.closeReadCh:
 		if !ok {
-			log.Println("ReadMessage: read closed, returning error")
-			return nil, errors.New("Stream read closed")
+			return nil, errors.New("ReadMessage: Stream read closed")
 		}
 	}
 
@@ -171,13 +169,12 @@ func (s *Stream) Read(buf []byte) (int, error) {
 		}
 	case _, ok := <-s.closeReadCh:
 		if !ok {
-			log.Println("read closed, returning error")
-			return 0, errors.New("Stream read closed")
+			return 0, errors.New("Read: Stream read closed")
 		}
 	}
 
 	if len(msg) > 0 {
-		s.recvWindowCh <- windowUpdateEvent{
+		s.recvWindowUpdateCh <- windowUpdateEvent{
 			streamId:     s.id,
 			windowUpdate: uint32(len(msg)),
 		}
@@ -218,8 +215,7 @@ func (s *Stream) Write(p []byte) (int, error) {
 			case <-s.windowUpdateCh:
 			case _, ok := <-s.closeWriteCh:
 				if !ok {
-					log.Println("write closed, returning error")
-					return 0, errors.New("Stream write closed")
+					return 0, errors.New("Write: Stream write closed")
 				}
 			}
 		}
