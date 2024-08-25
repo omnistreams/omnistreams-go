@@ -11,12 +11,15 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
+	"runtime"
 
 	"github.com/caddyserver/certmagic"
 	//"github.com/quic-go/quic-go"
 	"github.com/coder/websocket"
 	"github.com/omnistreams/omnistreams-go"
+	"github.com/omnistreams/omnistreams-go/transports"
 	"github.com/quic-go/quic-go/http3"
 	"github.com/quic-go/webtransport-go"
 )
@@ -42,17 +45,27 @@ type session interface {
 	AcceptRoad() (road, error)
 }
 
-type wsConnWrapper struct {
+type wsTransport struct {
 	wsConn *websocket.Conn
 }
 
-func NewWsConnWrapper(wsConn *websocket.Conn) *wsConnWrapper {
-	return &wsConnWrapper{
-		wsConn,
+func NewWsTransport(w http.ResponseWriter, r *http.Request) (*wsTransport, error) {
+
+	wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		OriginPatterns: []string{"*"},
+	})
+	if err != nil {
+		return nil, err
 	}
+
+	wsConn.SetReadLimit(128 * 1024)
+
+	return &wsTransport{
+		wsConn,
+	}, nil
 }
 
-func (wr *wsConnWrapper) Read(ctx context.Context) ([]byte, error) {
+func (wr *wsTransport) Read(ctx context.Context) ([]byte, error) {
 
 	msgType, msgBytes, err := wr.wsConn.Read(ctx)
 	if err != nil {
@@ -66,7 +79,7 @@ func (wr *wsConnWrapper) Read(ctx context.Context) ([]byte, error) {
 	return msgBytes, nil
 }
 
-func (wr *wsConnWrapper) Write(ctx context.Context, msg []byte) error {
+func (wr *wsTransport) Write(ctx context.Context, msg []byte) error {
 	return wr.wsConn.Write(ctx, websocket.MessageBinary, msg)
 }
 
@@ -95,12 +108,17 @@ func (c *osConnWrapper) AcceptRoad() (road, error) {
 
 func main() {
 
+	//n := runtime.SetMutexProfileFraction(1)
+	//fmt.Println(n)
+	runtime.SetBlockProfileRate(1)
+
 	useTlsArg := flag.Bool("use-tls", false, "Use TLS")
 	flag.Parse()
 
 	useTls := *useTlsArg
 
-	mux := http.NewServeMux()
+	//mux := http.NewServeMux()
+	mux := http.DefaultServeMux
 	var wtServer *webtransport.Server
 
 	var listener net.Listener
@@ -173,19 +191,15 @@ func main() {
 			sess = wtSess
 
 		} else {
-			wsConn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-				OriginPatterns: []string{"*"},
-			})
+
+			transport, err := transports.NewWebSocketServerTransport(w, r)
+			//transport, err := NewWsTransport(w, r)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
 
-			wsConn.SetReadLimit(128 * 1024)
-
-			wr := NewWsConnWrapper(wsConn)
-
-			osConn := omnistreams.NewConnection(wr, false)
+			osConn := omnistreams.NewConnection(transport, false)
 
 			osSess := &osConnWrapper{
 				osConn,
@@ -231,7 +245,7 @@ func handleStream(conn session, stream road) {
 		fmt.Println("Consumed", n)
 	case TestTypeEcho:
 		fmt.Println("TestTypeEcho")
-		_, err = stream.Write(buf[:n])
+		m, err := stream.Write(buf[:n])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -239,7 +253,7 @@ func handleStream(conn session, stream road) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println("Echoed", n)
+		fmt.Println("Echoed", int64(m)+n)
 	case TestTypeMimic:
 		fmt.Println("TestTypeMimic")
 		resStream, err := conn.OpenRoad()
@@ -247,7 +261,7 @@ func handleStream(conn session, stream road) {
 			fmt.Println(err)
 		}
 
-		_, err = resStream.Write(buf[:n])
+		m, err := resStream.Write(buf[:n])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -255,7 +269,7 @@ func handleStream(conn session, stream road) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println("Mimic'd", n)
+		fmt.Println("Mimic'd", int64(m)+n)
 	case TestTypeSend:
 
 		size := binary.BigEndian.Uint32(buf[TestHeaderSize:])

@@ -4,16 +4,23 @@ go 1.22.6
 
 replace github.com/omnistreams/omnistreams-go => ../
 
+replace github.com/omnistreams/omnistreams-go/transports => ../transports
+
 require (
 	github.com/caddyserver/certmagic v0.21.3
 	github.com/coder/websocket v1.8.12
 	github.com/omnistreams/omnistreams-go v0.0.0-00010101000000-000000000000
+	github.com/omnistreams/omnistreams-go/transports v0.0.0-00010101000000-000000000000
+	github.com/quic-go/quic-go v0.43.0
 	github.com/quic-go/webtransport-go v0.8.0
 )
 
 require (
 	github.com/caddyserver/zerossl v0.1.3 // indirect
 	github.com/go-task/slim-sprig v0.0.0-20230315185526-52ccab3ef572 // indirect
+	github.com/gobwas/httphead v0.1.0 // indirect
+	github.com/gobwas/pool v0.2.1 // indirect
+	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/pprof v0.0.0-20230821062121-407c9e7a662f // indirect
 	github.com/klauspost/cpuid/v2 v2.2.7 // indirect
 	github.com/libdns/libdns v0.2.2 // indirect
@@ -21,7 +28,6 @@ require (
 	github.com/miekg/dns v1.1.59 // indirect
 	github.com/onsi/ginkgo/v2 v2.12.0 // indirect
 	github.com/quic-go/qpack v0.4.0 // indirect
-	github.com/quic-go/quic-go v0.43.0 // indirect
 	github.com/zeebo/blake3 v0.2.3 // indirect
 	go.uber.org/mock v0.4.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
