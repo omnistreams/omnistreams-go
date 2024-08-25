@@ -13,11 +13,11 @@ type Transport interface {
 }
 
 type Connection struct {
-	nextStreamId uint32
-	streams      map[uint32]*Stream
-	streamCh     chan *Stream
-	mut          *sync.Mutex
-	transport    Transport
+	nextStreamId       uint32
+	streams            map[uint32]*Stream
+	streamCh           chan *Stream
+	mut                *sync.Mutex
+	transport          Transport
 	recvWindowUpdateCh chan windowUpdateEvent
 	eventCh            chan Event
 	wg                 *sync.WaitGroup
