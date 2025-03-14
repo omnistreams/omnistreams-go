@@ -175,6 +175,8 @@ func (s *Stream) Read(buf []byte) (int, error) {
 	}
 
 	if len(msg) > 0 {
+		// TODO: protect against sending if recvWindowUpdateCh is
+		// closed. Had at least one crash so far
 		s.recvWindowUpdateCh <- windowUpdateEvent{
 			streamId:     s.id,
 			windowUpdate: uint32(len(msg)),
