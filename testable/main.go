@@ -228,10 +228,12 @@ func handleStream(conn session, stream road) {
 
 	buf := make([]byte, 4096)
 
-	n, err := stream.Read(buf)
+	nFirstChunkInt, err := stream.Read(buf)
 	if err != nil {
 		fmt.Println(err)
 	}
+
+	nFirstChunk := int64(nFirstChunkInt)
 
 	testTypeByte := buf[0]
 
@@ -242,10 +244,11 @@ func handleStream(conn session, stream road) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println("Consumed", n)
+		nFirstChunkPayload := nFirstChunk - TestHeaderSize
+		fmt.Println("Consumed", n+nFirstChunkPayload)
 	case TestTypeEcho:
 		fmt.Println("TestTypeEcho")
-		m, err := stream.Write(buf[:n])
+		m, err := stream.Write(buf[:nFirstChunk])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -253,7 +256,7 @@ func handleStream(conn session, stream road) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println("Echoed", int64(m)+n)
+		fmt.Println("Echoed", int64(m)-TestHeaderSize+n)
 	case TestTypeMimic:
 		fmt.Println("TestTypeMimic")
 		resStream, err := conn.OpenRoad()
@@ -261,7 +264,7 @@ func handleStream(conn session, stream road) {
 			fmt.Println(err)
 		}
 
-		m, err := resStream.Write(buf[:n])
+		m, err := resStream.Write(buf[:nFirstChunk])
 		if err != nil {
 			fmt.Println(err)
 		}
@@ -269,34 +272,42 @@ func handleStream(conn session, stream road) {
 		if err != nil {
 			fmt.Println(err)
 		}
-		fmt.Println("Mimic'd", int64(m)+n)
+		fmt.Println("Mimic'd", int64(m)-TestHeaderSize+n)
 	case TestTypeSend:
 
 		size := binary.BigEndian.Uint32(buf[TestHeaderSize:])
 
 		var chunkSize uint32 = 256 * 1024
 
+		totalSent := 0
+
 		if size < chunkSize {
 			chunk := make([]byte, size)
 
-			_, err = stream.Write(chunk)
+			n, err := stream.Write(chunk)
 			if err != nil {
 				fmt.Println(err)
 				return
 			}
+
+			totalSent += n
 
 		} else {
 			chunk := make([]byte, chunkSize)
 
 			var i uint32
 			for i = 0; i < size; i += chunkSize {
-				_, err = stream.Write(chunk)
+				n, err := stream.Write(chunk)
 				if err != nil {
 					fmt.Println(err)
 					return
 				}
+
+				totalSent += n
 			}
 		}
+
+		fmt.Println("Sent", totalSent)
 	default:
 		fmt.Println("Unknown test type", testTypeByte)
 	}
