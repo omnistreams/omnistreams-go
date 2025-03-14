@@ -247,6 +247,8 @@ func (c *Connection) newStream(streamId uint32, syn bool) *Stream {
 
 	stream := NewStream(streamId, sendCh, c.recvWindowUpdateCh)
 
+	// TODO: readClosed and writeClosed need concurrency protection. I've
+	// had at least one crash from c.wg going negative.
 	readClosed := false
 	writeClosed := false
 	checkClosed := func() {
