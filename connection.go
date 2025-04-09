@@ -32,7 +32,14 @@ func NewConnection(transport Transport, isClient bool) *Connection {
 
 	streams := make(map[uint32]*Stream)
 	mut := &sync.Mutex{}
-	streamCh := make(chan *Stream)
+	// TODO: I added a buffer here to fix a bug where waiting for new
+	// streams to be accepted blocks all further frame processing. This
+	// is working for me currently but if there are ever a lot of pending
+	// streams and the buffer fills it will still break. Need a more
+	// robust solution. Maybe a goroutine per stream but I'm worried
+	// streams might get out of order and not sure if that could have other
+	// effects.
+	streamCh := make(chan *Stream, 1024)
 
 	// TODO: Once we break compatibility with muxado, maybe switch this to
 	// match WebTransport, which uses even numbered stream IDs for clients
