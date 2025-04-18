@@ -11,6 +11,11 @@ type Transport interface {
 	Write(context.Context, []byte) error
 }
 
+type AuthenticationError struct {}
+func (e *AuthenticationError) Error() string {
+	return "Authentication error"
+}
+
 
 func NewWebSocketServerTransport(w http.ResponseWriter, r *http.Request) (Transport, error) {
         return newCoderWebsocketServerTransport(w, r)	

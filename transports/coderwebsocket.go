@@ -1,6 +1,7 @@
 package transports
 
 import (
+	"strings"
         "errors"
 	"context"
 	"net/http"
@@ -38,6 +39,14 @@ func newCoderWebsocketServerTransport(w http.ResponseWriter, r *http.Request) (*
 func newCoderWebsocketClientTransport(ctx context.Context, uri string) (*coderWebsocketTransport, error) {
 	wsConn, _, err := websocket.Dial(ctx, uri, nil)
         if err != nil {
+
+		// TODO: so hacky. Depends on implementation details of
+		// websocket library. I opened an issue here:
+		// https://github.com/coder/websocket/issues/528
+		if strings.Contains(err.Error(), "401") {
+			return nil, &AuthenticationError{}
+		}
+
                 return nil, err
         }
 
