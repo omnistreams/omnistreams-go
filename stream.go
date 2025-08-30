@@ -196,6 +196,7 @@ func (s *Stream) Read(buf []byte) (int, error) {
 
 func (s *Stream) Write(p []byte) (int, error) {
 
+	// TODO: maybe buf could live on Stream and be shared
 	buf := make([]byte, len(p))
 	copy(buf, p)
 
