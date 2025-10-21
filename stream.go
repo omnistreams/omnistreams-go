@@ -59,6 +59,9 @@ func (s *Stream) StreamID() uint32 {
 }
 
 func (s *Stream) Close() error {
+	// TODO: this logic seems bad. If CloseRead returns an error we
+	// could be left in a half-open state. Need to guarantee both
+	// get called
 	err := s.CloseRead()
 	if err != nil {
 		return err
