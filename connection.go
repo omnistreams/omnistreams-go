@@ -200,7 +200,9 @@ func (c *Connection) handleFrame(f *frame) {
 			c.streamCh <- stream
 		}
 
-		stream.recvCh <- f.data
+		if len(f.data) > 0 {
+			stream.recvCh <- f.data
+		}
 
 		if f.fin {
 			close(stream.recvCh)
